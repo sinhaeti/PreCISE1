@@ -1,0 +1,68 @@
+# SLURM JOB ARRAY OPTIONS
+PER_TASK=2 #number of samples run in each job
+NTASKS=13 #number of threads to allocate per job, NOT USED
+# number of jobs is defined in precise_jobarray.sh
+
+
+# INPUT_DIR="/home/es984/oelab_es984/data/Elemento-DW-9150_2020_08_03"
+# FASTQ_PATHS="/home/es984/oelab_es984/data/Elemento-DW-9150_2020_08_03_samples.txt"
+# OUTPUT_DIR="/home/es984/oelab_es984/PreCISE/Elemento-DW-9150_2020_08_03_output"
+
+# INPUT_DIR="/home/es984/oelab_es984/data/Hidalgo-Medina-OG-8763_2020_03_05"
+# OUTPUT_DIR="/home/es984/oelab_es984/PreCISE/Hidalgo-Medina-OG_output"
+# FASTQ_PATHS="/home/es984/oelab_es984/data/Hidalgo-Medina-OG-8763_2020_03_05_samples.txt"
+
+# FILE READING IN
+SUF_LENGTH=5 #only used with bam files
+
+# ADAPTER TRIM PARAMETERS
+AVERAGE_BASE_QUALITY_WINDOW=20
+BASE_QUALITY_WINDOW_SIZE=6
+HEADCROP=0
+TAILCROP=0
+INDEX_LENGTH=9
+THREAD_NUM=1
+
+# GENCORE PARAMETERS
+MIN_READ_LENGTH=75
+NUM_MISMATCHES=2
+MIN_READS_PER_MOLECULE=1
+
+# VARDICT-JAVA PARAMETERS
+MIN_VAR_READS=2
+MAX_INSERT=75
+MAX_MEAN_MISMATCHES_PER_READ=8
+MIN_BASE_QUALITY=25
+MIN_MAPPING_QUALITY=25
+EXTEND_BED=10
+SOMATIC_PVAL=0.001
+SOMATIC_ODDS=0.01 #?
+MIN_TUMOR_DEPTH=50 #?
+MIN_NORMAL_DEPTH=50 #?
+SB_ODDRATIO=100
+SB_PVAL=0.01
+MIN_DEPTH=50
+FLAG_HEX=0x500
+GMAF_VALUE=0.0025 #?
+COSMIC_MIN_COUNT=2
+MIN_READ_POS=1
+
+#IMPORT ADDITIONAL FILES
+REF_FASTA="/home/es984/oelab_es984/37_genome_files/human_g1k_b37.fasta"
+VCFHEADER_CONTIGS="/home/es984/oelab_es984/37_genome_files/grch37_headers.txt"
+#TARGETS="/home/es984/oelab_es984/bed_files/merged_probes_Cornell_Nuria_PanHeme_IG_v2p2_TE-95934769_hg19_211129220343.sort.bed"
+TARGETS="/home/es984/oelab_es984/bed_files/precise1.b37.sort.bed"
+INT_LIST="/home/es984/oelab_es984/bed_files/precise1.b37.sort.interval_list"
+#TARGETS="/home/es984/oelab_es984/bed_files/merged_probe_file_PanHeme_Nuria_R01_ClonHemat_v3_TE-96858496_hg19.bed"
+tcgafile="/home/es984/oelab_es984/myeloma_lipkin/aml.tcga.variants.nogt.hg19.uniq.dist.tcgasample.vcf"
+cosmicfile="/home/es984/oelab_es984/PreCISE/CosmicCodingMutOut.vcf.gz"
+lcrbed="/home/es984/oelab_es984/myeloma_lipkin/LCR-hs37d5.bed"
+
+#IMPORT ADDITIONAL TOOLS
+fastp="/home/es984/oelab_es984/tools/fastp"
+gencore="/home/es984/oelab_es984/tools/gencore"
+vcflib_dir="/home/es984/oelab_es984/tools/vcflib/bin/"
+vardict_script_dir="/home/es984/oelab_es984/tools/VarDict/"
+vawk_dir="/home/es984/miniconda3/bin/vawk"
+snpeff_dir="/home/es984/oelab_es984/tools/snpEff/"
+vep_dir="/home/es984/oelab_es984/tools/ensembl-vep"
