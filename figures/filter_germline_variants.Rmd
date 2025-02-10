@@ -1,0 +1,246 @@
+---
+title: "Filter Germline Variants"
+output: html_notebook
+---
+
+
+```{r}
+# Eti Sinha
+# Feb 2024
+
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(cowplot)
+library(magrittr)
+library(scales)
+library(tidyverse)
+library(data.table)   
+library(ggplot2)
+```
+
+```{r}
+germline_vcf_table_df <- read_csv(file = "germline_aggregated_vcf.csv")
+```
+
+```{r}
+germline_vcf_table_df_pass <- germline_vcf_table_df %>% filter(FILTER == "PASS")
+#germline_vcf_table_df_pass_10000 <- germline_vcf_table_df_pass %>% head(10000)
+
+germline_vcf_table_df_pass_filter <- germline_vcf_table_df_pass %>%
+  filter(grepl('missense|splice_[ad]|stop_|frameshift|inframe_[id]', Consequence)) %>% # keep only LOF variants
+  filter(!grepl('benign', CLIN_SIG)) %>% #remove non-consequential variants
+  filter(gnomAD_AF < 0.01 | is.na(gnomAD_AF)) %>% # remove variants found frequently in GNOMAD
+  filter((AF < 0.01 | is.na(AF))) %>% #remove variants found frequently in 1000 genomes(?)
+  filter(SYMBOL %in% precisegenes) %>% # gene is in panel
+  filter(t_alt_count > 10) %>% # variant has at least 10 supporting reads
+  filter((t_alt_count)/(t_alt_count + t_ref_count) > 0.3) %>% #VAF of at least 30%, remove somatic mutations
+  filter(!grepl('benign', PolyPhen)) #remove non-consequential variants
+
+precisegenes=read.delim("~/Dropbox (Guzman Lab)/Guzman Lab/Nuria Mencia/Precise1_samples/frequently_used_objects/precise_gene_list_jan2021-unique.txt",as.is=T,header=F)[,1]
+prelgenes=c("ASXL1","ASXL2","ATRX","BCOR","BCORL1","BRAF","CALR","CARD11","CBL","CBLB","CBLC","CD70","CD79B","CDKN2A","CEBPA","CREBBP","CSF3R","CUX1","DIS3","DNMT3A","EPPK1","ETV6","EZH2","FAM46C","FBXW7","FLT1","FLT3","GATA1","GATA2","GNAS","HRAS","IDH1","IDH2","IKZF1","JAK1","JAK2","JAK3","KDM6A","KIT","KRAS","MPL","MYD88","NOTCH1","NPM1","NRAS","PAX5","PDGFRA","PHF6","PTEN","PTPN11","RAD21","RUNX1","SETBP1","SF3B1","SMC1A","SMC3","SRSF2","STAG1","STAG2","STAT6","TET1","TET2","TNF","TNFRSF14","TP53","U2AF1","WT1","ZRSR2")
+# Myeloid genes  that were included in the preleukemia paper + other genes
+precise.subset=c(precisegenes[precisegenes %in% prelgenes],"ATM","PPM1D")
+
+DTA<-c("DNMT3A","TET2",'ASXL1')
+DDR<-c("ATM","PPM1D","TP53")
+```
+
+```{r}
+# remove all germline calls in control variants
+germline_vcf_table_df_pass_filter$protChange <- germline_vcf_table_df_pass_filter$HGVSp %>% sapply(.,function(x) strsplit(as.character(x),":")[[1]][2])
+germline_vcf_table_df_pass_filter$variant <- str_c(germline_vcf_table_df_pass_filter$SYMBOL, germline_vcf_table_df_pass_filter$protChange, sep = " ")
+
+germline_vcf_table_df_pass_filter_controls <- germline_vcf_table_df_pass_filter %>%  filter(grepl("NA12878|NPB177", SAMPLE))
+
+germline_vcf_table_df_pass_filter <- germline_vcf_table_df_pass_filter %>% subset(!(variant %in% germline_vcf_table_df_pass_filter_controls$variant))
+
+# remove somatic variants from pos control samples
+pos_control_variants <- patient_seq_calls_annotated_filtered %>% filter(posCtrlFilter == TRUE) %>% select(variant) %>% unique()
+
+germline_vcf_table_df_pass_filter %<>% subset(!(variant %in% pos_control_variants$variant))
+
+# only plot the patient samples
+germline_vcf_table_df_pass_filter_patients <-  germline_vcf_table_df_pass_filter %>%  filter(!(grepl("AMLMutationMix|Control|NA12878|CH[2-4]xDilSer|NPB177|MACS_CYs", SAMPLE)))
+
+
+#saveRDS(germline_vcf_table_df_pass_filter_patients, "germline_vcf_table_df_pass_filter_patients.rda")
+germline_vcf_table_df_pass_filter_patients <- readRDS("germline_vcf_table_df_pass_filter_patients.rda")
+```
+
+# Germline cohort oncoprint
+```{r}
+# Add cohort
+germline_vcf_table_df_pass_filter_patients <- germline_vcf_table_df_pass_filter_patients %>% 
+  mutate(Cohort = case_when(
+      grepl('WIHS', SAMPLE) ~ 'HIV',
+      grepl('WHIS', SAMPLE) ~ 'HIV',
+      # grepl('RS', SAMPLE) ~ 'Roswell Park',
+      # grepl('CML', SAMPLE) ~ 'Bone Marrow',
+      # grepl('Chicago', SAMPLE) ~ 'Chicago',
+      # grepl('Mx', SAMPLE) ~ 'Mexico',
+      TRUE ~ 'Other'))
+
+# only include QC pass samples
+all_seq_hsmetrics_pass <- readRDS("all_seq_hsmetrics_pass.rda")
+germline_vcf_table_df_pass_filter_patients <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(SAMPLE %in% all_seq_hsmetrics_pass$SampleID)
+
+filtered_df <- germline_vcf_table_df_pass_filter_patients
+
+names(filtered_df)[names(filtered_df) == 'SYMBOL'] <- 'Hugo_Symbol'
+names(filtered_df)[names(filtered_df) == 'CHROM'] <- 'Chromosome'
+names(filtered_df)[names(filtered_df) == 'POS'] <- 'Start_Position'
+filtered_df$End_Position <- filtered_df$Start_Position
+names(filtered_df)[names(filtered_df) == 'REF'] <- 'Reference_Allele'
+names(filtered_df)[names(filtered_df) == 'ALT'] <- 'Tumor_Seq_Allele2'
+names(filtered_df)[names(filtered_df) == 'VARIANT_CLASS'] <- 'Variant_Type'
+filtered_df <- filtered_df %>%
+  mutate(Variant_Type = ifelse(Variant_Type == "SNV", "SNP", Variant_Type))
+names(filtered_df)[names(filtered_df) == 'Consequence'] <- 'Variant_Classification'
+names(filtered_df)[names(filtered_df) == 'SAMPLE'] <- 'Tumor_Sample_Barcode'
+
+my_vs = c(
+  "inframe_deletion",
+  "missense_variant",
+  "splice_acceptor_variant&coding_sequence_variant",
+  "inframe_insertion",
+  "frameshift_variant",
+  "stop_gained",
+  "inframe_deletion&splice_region_variant",
+ " missense_variant&splice_region_variant",
+  "splice_donor_variant",
+  "splice_acceptor_variant",
+  "inframe_insertion&splice_region_variant"
+)
+
+# create maf file
+laml = read.maf(maf = filtered_df, 
+                vc_nonSyn = my_vs, 
+                clinicalData = filtered_df %>% select(Tumor_Sample_Barcode, Cohort),
+                verbose = FALSE)
+
+# plot oncoplot
+vc_cols = RColorBrewer::brewer.pal(n = 11, name = 'Paired')
+names(vc_cols) = my_vs
+oncoplot(maf = laml, 
+         colors = vc_cols, 
+         draw_titv = TRUE,
+         titleText = NA,
+         clinicalFeatures = c('Cohort'),
+         sortByAnnotation = TRUE)
+ggsave(filename="/Users/etisinhawork/PreCISE/germline_oncoprint_cohort.pdf", device = "pdf", width = 5, height = 4, units = "in")
+```
+# Germline oncoprint - no HIV
+```{r}
+filtered_df <- germline_vcf_table_df_pass_filter_patients %>% filter(!Cohort == "HIV")
+
+names(filtered_df)[names(filtered_df) == 'SYMBOL'] <- 'Hugo_Symbol'
+names(filtered_df)[names(filtered_df) == 'CHROM'] <- 'Chromosome'
+names(filtered_df)[names(filtered_df) == 'POS'] <- 'Start_Position'
+filtered_df$End_Position <- filtered_df$Start_Position
+names(filtered_df)[names(filtered_df) == 'REF'] <- 'Reference_Allele'
+names(filtered_df)[names(filtered_df) == 'ALT'] <- 'Tumor_Seq_Allele2'
+names(filtered_df)[names(filtered_df) == 'VARIANT_CLASS'] <- 'Variant_Type'
+filtered_df <- filtered_df %>%
+  mutate(Variant_Type = ifelse(Variant_Type == "SNV", "SNP", Variant_Type))
+names(filtered_df)[names(filtered_df) == 'Consequence'] <- 'Variant_Classification'
+names(filtered_df)[names(filtered_df) == 'SAMPLE'] <- 'Tumor_Sample_Barcode'
+
+my_vs = c(
+  "inframe_deletion",
+  "missense_variant",
+  "splice_acceptor_variant&coding_sequence_variant",
+  "inframe_insertion",
+  "frameshift_variant",
+  "stop_gained",
+  "inframe_deletion&splice_region_variant",
+ " missense_variant&splice_region_variant",
+  "splice_donor_variant",
+  "splice_acceptor_variant",
+  "inframe_insertion&splice_region_variant"
+)
+
+# create maf file
+laml = read.maf(maf = filtered_df, 
+                vc_nonSyn = my_vs, 
+                clinicalData = filtered_df %>% select(Tumor_Sample_Barcode, Cohort),
+                verbose = FALSE)
+
+# plot oncoplot
+vc_cols = RColorBrewer::brewer.pal(n = 11, name = 'Paired')
+names(vc_cols) = my_vs
+oncoplot(maf = laml, 
+         colors = vc_cols, 
+         draw_titv = TRUE,
+         titleText = NA)
+ggsave(filename="/Users/etisinhawork/PreCISE/germline_oncoprint_noHIV.pdf", device = "pdf", width = 5, height = 4, units = "in")
+```
+
+
+```{r}
+num_mutations_table <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(!Cohort == "HIV") %>% 
+  select(SAMPLE) %>% 
+  table() %>% 
+  as.data.frame() %>% 
+  select(Freq) %>% 
+  table() %>% 
+  as.data.frame() 
+
+colnames(num_mutations_table) <- c("num_var", "freq")
+ggbarplot(num_mutations_table, x = "num_var", y = "freq", fill = "black") +
+  theme(strip.text.y = element_text(angle = 0)) +
+  labs(
+    x = "Number of Germline Variants Per Sample",
+    y = "Number of Samples"
+    ) +
+  rotate_x_text(angle = 45) +
+  ylim(0,70)
+ggsave(filename="/Users/etisinhawork/PreCISE/germline_variants_per_sample_NOHIV.pdf", device = "pdf", width = 4, height = 4, units = "in")
+```
+
+# Check germline variants in BM vs PB 
+Compared germline variants in BL-PB (Baseline Peripheral Blood) and 3mo-PB (3 months from Baseline Peripheral Blood), there are 21 variants found in BL-PB, of which 15 were find in 3mo-PB. 5 missing variants from 3mo-PB were from 2 samples that did not pass QC (samples WCMC009 and WCMC006). 1 variant was only found in 3mo-PB and not in BL-PB; the BL-PB timepoint for the sample did not pass QC (WCMC020).
+```{r}
+# Get BM Study samples, Add WCMC_ID and location columns
+germline_vcf_table_df_pass_filter_patients_bmstudy <- germline_vcf_table_df_pass_filter_patients %>% filter(grepl("CML-WCMC",SAMPLE))
+germline_vcf_table_df_pass_filter_patients_bmstudy %<>% mutate(WCMC_ID = str_extract(SAMPLE, "WCMC\\d+"))
+
+# Check if variant is in BM and PB
+germline_vcf_table_df_pass_filter_patients_bmstudy <- germline_vcf_table_df_pass_filter_patients_bmstudy %>% 
+  mutate(location = case_when(
+      grepl('BM', SAMPLE) ~ 'BM',
+      grepl('PB', SAMPLE) ~ 'PB',
+      TRUE ~ 'Other'))
+
+bmstudy_pivot_wider <- germline_vcf_table_df_pass_filter_patients_bmstudy %>% 
+    select(WCMC_ID, location, variant) %>% unique() %>% 
+    mutate(True = TRUE) %>% 
+    pivot_wider(names_from = "location", values_from = "True", values_fill = FALSE)
+
+# Check if variant is in PB BL and 3 months
+germline_vcf_table_df_pass_filter_patients_bmstudy <- germline_vcf_table_df_pass_filter_patients_bmstudy %>% 
+  mutate(timepoint = case_when(
+      grepl('BL-PB', SAMPLE) ~ 'BL-PB',
+      grepl('3mo-PB', SAMPLE) ~ '3mo-PB',
+      grepl('BL-BM', SAMPLE) ~ 'BL-BM',
+      grepl('3mo-BM', SAMPLE) ~ '3mo-BM',
+      grepl('15mo-PB', SAMPLE) ~ '15mo-PB',
+      TRUE ~ 'Other'))
+
+bmstudy_pivot_wider_timepoint <- germline_vcf_table_df_pass_filter_patients_bmstudy %>%
+  filter(timepoint %in% c('BL-PB','3mo-PB')) %>% 
+  select(WCMC_ID, timepoint, variant) %>% 
+  unique() %>% 
+  mutate(True = TRUE) %>% 
+  pivot_wider(names_from = "timepoint", values_from = "True", values_fill = FALSE)
+
+# Get samples that passed QC
+bm_pass <- all_seq_hsmetrics_pass %>% filter(grepl("CML-WCMC",SampleID)) %>% select(SampleID)
+bm_pass %>% filter(grepl("WCMC|BL-PB|3mo-PB", SampleID)) %>% arrange(desc(SampleID))
+
+# 8 patients with 13 same variants at 2 different blood timepoints (remove patients without 2 time-points because of QC fail)
+bmstudy_pivot_wider_timepoint %>% filter(!WCMC_ID %in% c("WCMC009", "WCMC006", "WCMC020")) 
+```
+

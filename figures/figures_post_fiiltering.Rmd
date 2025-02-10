@@ -1,0 +1,1703 @@
+---
+title: "PreCISE Paper Figures Post Filtering"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r message=FALSE, warning=FALSE}
+# Eti Sinha
+# Nov 2023
+
+library(ggpmisc)
+library(magrittr)
+library(dplyr)
+library(stringr)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(tidymodels)
+library(maftools)
+```
+
+Working directory is below:
+
+```{r}
+getwd()
+```
+
+### Load Files
+
+```{r}
+control_seq_calls_annotated_final <- readRDS("control_seq_calls_annotated_final_updated.rda")
+patient_seq_calls_annotated_final_updated <- readRDS("patient_seq_calls_annotated_final_updated.rda")
+all_seq_hsmetrics <- readRDS("all_seq_hsmetrics.rda")
+all_seq_depth <- readRDS("all_seq_depth.rda") %>% filter(DEPTH_Depth > 50)
+load("~/Dropbox (Guzman Lab)/Guzman Lab/Nuria Mencia/HIV_project/HIVdata-Analysis-v3/dilser.expected.RData")
+colnames(dilser.expected) <- c("dilser_variant_class", "dilser_primary","dilser_chr","dilser_start","variant","dilser_vafprimary", "dilser_ref", "dilser_alt", "lesionID", "labid", "dilser_expected_vaf")
+
+# re-name colunns
+all_seq_hsmetrics$SampleID <- all_seq_hsmetrics$Sample %>% gsub("_corrected","",.)
+all_seq_sample_ids <- all_seq_hsmetrics %>% select(SampleID) %>% unique() %>% as.data.frame()
+all_seq_insertsize <- read_tsv(file = "multiqc_picard_insertSize.txt") %>% unique() 
+all_seq_insertsize <- all_seq_insertsize %>% merge(., all_seq_hsmetrics %>% select(Sample, SampleID, Sequencing_run, fragmentation_method), by.x = "SAMPLE_NAME", by.y = "Sample", all=T) %>% filter(!MEDIAN_INSERT_SIZE %>% is.na())
+```
+
+# Re-do some annotations:
+
+```{r}
+# TODO:
+# which samples were removed
+# which labids (control samples) should be keep for analysis / plots?
+
+#saveRDS(patient_seq_calls_annotated_final_updatedpon, "patient_seq_calls_annotated_final_updatedpon")
+patient_seq_calls_annotated_final_updatedpon <- readRDS("patient_seq_calls_annotated_final_updatedpon")
+```
+
+# Figure 1: Quality Control
+
+QC by sequencing run
+
+```{r}
+
+sequencing_run_table <- all_seq_hsmetrics %>% select(Sample, Sequencing_run, fragmentation_method) %>%  unique() %>% select(Sequencing_run, fragmentation_method) %>%  table() %>%  as.data.frame() %>% pivot_wider(names_from = fragmentation_method,values_from = Freq)
+colnames(sequencing_run_table) <- c("Sequencing Run", "Enzymatic Fragmentation",  "Sonication Fragmentation")
+kable(format = "html", sequencing_run_table, caption = "Sequencing Runs for PreCISE1 Panel") %>% save_kable("/Users/etisinhawork/PreCISE/sequencing_run_table.pdf", zoom = 0.5)
+```
+
+```{r}
+precisegenes=read.delim("~/Dropbox (Guzman Lab)/Guzman Lab/Nuria Mencia/Precise1_samples/frequently_used_objects/precise_gene_list_jan2021-unique.txt",as.is=T,header=F)[,1]
+prelgenes=c("ASXL1","ASXL2","ATRX","BCOR","BCORL1","BRAF","CALR","CARD11","CBL","CBLB","CBLC","CD70","CD79B","CDKN2A","CEBPA","CREBBP","CSF3R","CUX1","DIS3","DNMT3A","EPPK1","ETV6","EZH2","FAM46C","FBXW7","FLT1","FLT3","GATA1","GATA2","GNAS","HRAS","IDH1","IDH2","IKZF1","JAK1","JAK2","JAK3","KDM6A","KIT","KRAS","MPL","MYD88","NOTCH1","NPM1","NRAS","PAX5","PDGFRA","PHF6","PTEN","PTPN11","RAD21","RUNX1","SETBP1","SF3B1","SMC1A","SMC3","SRSF2","STAG1","STAG2","STAT6","TET1","TET2","TNF","TNFRSF14","TP53","U2AF1","WT1","ZRSR2")
+# Myeloid genes  that were included in the preleukemia paper + other genes
+precise.subset=c(precisegenes[precisegenes %in% prelgenes],"ATM","PPM1D")
+
+DTA<-c("DNMT3A","TET2",'ASXL1')
+DDR<-c("ATM","PPM1D","TP53")
+```
+
+```{r}
+# depth coverage of each gene
+all_seq_depth_mean <- all_seq_depth %>% 
+  filter(DEPTH_Depth > 50) %>% 
+  group_by(Sequencing_run, DEPTH_SampleID, DEPTH_Gene) %>% 
+  summarise(mean_depth = mean(DEPTH_Depth)) %>% 
+  left_join(all_seq_depth %>% select(Sequencing_run, DEPTH_SampleID, DEPTH_Gene, fragmentation_method)) %>% 
+  ungroup()
+
+# fiter for genes of interest, and samples with sufficient number of reads
+#  upperlimit to make sure multiple samples contamination is removed too
+all_seq_hsmetrics_pass <- all_seq_hsmetrics %>% 
+  filter(TOTAL_READS > 10000000 & TOTAL_READS < 50000000) %>% #?
+  filter(MEAN_BAIT_COVERAGE > 1000 & MEAN_BAIT_COVERAGE < 5000) %>% 
+  filter(ON_TARGET_BASES > 100000000) %>% 
+  filter(FOLD_80_BASE_PENALTY < 20)
+
+all_seq_hsmetrics_samples_pass <- all_seq_hsmetrics_pass %>%
+  select(SampleID) %>% 
+  unique() %>% 
+  as.data.frame()
+all_seq_depth_mean_sample_pass <- all_seq_depth_mean %>% 
+  filter(DEPTH_Gene %in% precisegenes) %>% 
+  filter(DEPTH_SampleID %in% all_seq_hsmetrics_samples_pass$SampleID) %>% 
+  unique()
+
+#saveRDS(all_seq_hsmetrics_pass, "all_seq_hsmetrics_pass.rda")
+all_seq_hsmetrics_pass <- readRDS("all_seq_hsmetrics_pass.rda")
+```
+
+# Figure 1d: Depth vs Gene Barplot
+```{r}
+all_seq_depth_mean_sample_pass$DEPTH_Gene = reorder(all_seq_depth_mean_sample_pass$DEPTH_Gene, all_seq_depth_mean_sample_pass$mean_depth, mean)
+
+yintercept = mean(all_seq_depth_mean_sample_pass$mean_depth) %>% round(0)
+ggviolin(all_seq_depth_mean_sample_pass %>%  filter(Sequencing_run != "Elemento_NMT_12590"), x="DEPTH_Gene", y="mean_depth") +
+  theme(strip.text.y = element_text(angle = 0),
+        text=element_text(size=8)) +
+  labs(
+    x = "Gene",
+    y = "Depth", 
+    color = "Fragmentation Method"
+    ) +
+  rotate_x_text(angle = 45) +
+  geom_hline(yintercept = mean(all_seq_depth_mean_sample_pass$mean_depth), colour = 'black') +
+  coord_cartesian(clip = 'off') +
+  annotate("text", x= 47, y = yintercept + 100, label = yintercept) +
+  theme(plot.margin = unit(c(1,3,1,1), "lines"))
+ggsave(filename="/Users/etisinhawork/PreCISE/depth_pergene_boxplot_frag.pdf", device = "pdf", width = 8, height = 4, units = "in")
+```
+
+```{r}
+# plot just the mean depth of each gene as a scatter plot, smaller to largest
+all_seq_depth_mean_median <- all_seq_depth_mean_sample_pass %>% 
+  group_by(DEPTH_Gene, fragmentation_method) %>% 
+  summarise(median_depth = median(mean_depth)) %>% 
+  ungroup()
+  
+ggplot(all_seq_depth_mean_median, aes(x = DEPTH_Gene, y = median_depth, color = "fragmentation_method")) +
+  geom_point(order()) 
+```
+
+```{r}
+# Plot QC Values
+ggplot(all_seq_hsmetrics_pass, aes(Sequencing_run,MEAN_TARGET_COVERAGE, color = fragmentation_method)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(all_seq_hsmetrics$MEAN_TARGET_COVERAGE), colour = 'red') +
+  theme_classic() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "Sequencing Run", 
+    y = "Mean Target Coverage (HSMetrics)",
+    title = "Mean Target Coverage is consistent across sequencing runs",
+    subtitle = "Mean Mean Target Coverage is ~1400"
+    ) 
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_target_coverage_across_runs_frag.tiff", device = "tiff", width = 10, height = 8, units = "in")
+```
+
+# Figure 1a: Mean Target Coverage
+
+```{r}
+
+# Plot QC Values
+yintercept = mean(all_seq_hsmetrics_pass$MEAN_TARGET_COVERAGE) %>% round(0)
+ggplot(all_seq_hsmetrics_pass %>% filter(TOTAL_READS > 10000000 & TOTAL_READS < 50000000) %>% filter(Sequencing_run != "Elemento_NMT_12590"), aes(fragmentation_method,MEAN_TARGET_COVERAGE, color = fragmentation_method)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(all_seq_hsmetrics_pass$MEAN_TARGET_COVERAGE), colour = 'black', linetype = 2) +
+  coord_cartesian(clip = 'off') +
+  annotate("text", x= 2.5, y = yintercept *1.1, label = yintercept) +
+  theme(plot.margin = unit(c(1,3,1,1), "lines")) +
+  stat_compare_means(method = "t.test",vjust = 1, hjust = 0.5) +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "DNA Fragmentation Method", 
+    y = "Mean Target Coverage"
+    ) +
+  guides(colour = "none")
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_target_coverage_frag.pdf", device = "pdf", width = 3, height = 3, units = "in")
+
+```
+
+```{r}
+ggplot(all_seq_hsmetrics_pass, aes(Sequencing_run,MEAN_BAIT_COVERAGE, color = fragmentation_method)) + 
+  geom_boxplot() +
+   geom_hline(yintercept = mean(all_seq_hsmetrics$MEAN_BAIT_COVERAGE), colour = 'red') +
+  theme_classic() +
+  ylab(label = "Mean Bait Coverage (HSMetrics)") +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )  +
+  labs(
+    x = "Sequencing Run", 
+    y = "Mean Bait Coverage (HSMetrics)",
+    title = "Mean Bait Coverage is consistent across sequencing runs",
+    subtitle = "Mean Mean Bait Coverage is ~1900"
+    ) 
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_bait_coverage_across_runs_frag.tiff", device = "tiff", width = 10, height = 8, units = "in")
+```
+
+```{r}
+
+# Plot QC Values
+yintercept = mean(all_seq_hsmetrics_pass$MEAN_BAIT_COVERAGE) %>% round(0)
+ggplot(all_seq_hsmetrics_pass %>% filter(TOTAL_READS > 10000000 & TOTAL_READS < 50000000) %>% filter(Sequencing_run != "Elemento_NMT_12590"), aes(fragmentation_method,MEAN_BAIT_COVERAGE, color = fragmentation_method)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(all_seq_hsmetrics_pass$MEAN_BAIT_COVERAGE), colour = 'black', linetype = 2) +
+  geom_text(aes(0,yintercept,label = yintercept, vjust = -1, hjust = -0.5), colour = 'black') +
+  stat_compare_means(method = "t.test",vjust = 1, hjust = -0.5) +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "DNA Fragmentation Method", 
+    y = "Mean Bait Coverage"
+    ) +
+  guides(colour = "none")
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_bait_coverage_frag.pdf", device = "pdf", width = 6, height = 6, units = "in")
+```
+
+# Figure 1b: Total Reads
+
+```{r}
+yintercept = mean(all_seq_hsmetrics_pass$TOTAL_READS/1000000) %>% round(0)
+ggplot(all_seq_hsmetrics_pass, aes(fragmentation_method,TOTAL_READS/1000000, color = fragmentation_method)) + 
+  geom_boxplot()+
+  geom_hline(yintercept = mean(all_seq_hsmetrics_pass$TOTAL_READS)/1000000, colour = 'black', linetype = 2)+
+  coord_cartesian(clip = 'off') +
+  annotate("text", x= 2.5, y = yintercept *1.05, label = yintercept) +
+  theme(plot.margin = unit(c(1,3,1,1), "lines")) +
+  stat_compare_means(method = "t.test",vjust = 1, hjust = 0.5) +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "DNA Fragmentation Method", 
+    y = "Total Reads (Million)"
+    ) +
+  guides(colour = "none") 
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_total_reads_across_runs_frag.pdf", device = "pdf", width = 3, height = 3, units = "in")
+```
+
+# Figure 1c: On Target Rate
+
+```{r}
+# Include run Elemento_NMT_12590
+# all_seq_hsmetrics_ontarget_df <- all_seq_hsmetrics %>% 
+#   filter(TOTAL_READS > 5000000 & TOTAL_READS < 50000000) %>% #?
+#   filter(MEAN_BAIT_COVERAGE > 500 & MEAN_BAIT_COVERAGE < 5000) %>% 
+#   filter(ON_TARGET_BASES > 50000000) %>% 
+#   filter(FOLD_80_BASE_PENALTY < 20)
+# 
+# all_seq_hsmetrics_ontarget_df$PCT_ON_TARGET <- ((all_seq_hsmetrics_ontarget_df$MEAN_TARGET_COVERAGE/all_seq_hsmetrics_ontarget_df$TOTAL_READS)*10000/1.25) *100 
+# yintercept =  mean(all_seq_hsmetrics_ontarget_df$PCT_ON_TARGET) %>% round(digits = 0)
+# ggplot(all_seq_hsmetrics_ontarget_df, aes(fragmentation_method,PCT_ON_TARGET, color = fragmentation_method)) + 
+#   geom_boxplot()+
+#   geom_hline(yintercept = mean(all_seq_hsmetrics_ontarget_df$PCT_ON_TARGET), colour = 'black', linetype = 2)+
+#   coord_cartesian(clip = 'off') +
+#   annotate("text", x= 2.55, y = yintercept *1.05, label = str_c(yintercept,"%")) +
+#   theme(plot.margin = unit(c(1,3,1,1), "lines")) +
+#   stat_compare_means(method = "t.test",vjust = 1, hjust = 0.5) +
+#   theme_classic() +
+#   theme(
+#     axis.ticks.x = element_blank()
+#     ) +
+#   labs(
+#     x = "DNA Fragmentation Method", 
+#     y = "On Target Rate %"
+#     ) +
+#   guides(colour = "none") 
+
+all_seq_hsmetrics_pass$PCT_ON_TARGET <- ((all_seq_hsmetrics_pass$MEAN_TARGET_COVERAGE/all_seq_hsmetrics_pass$TOTAL_READS)*10000/1.25) *100 
+yintercept =  mean(all_seq_hsmetrics_pass$PCT_ON_TARGET) %>% round(digits = 0)
+ggplot(all_seq_hsmetrics_pass, aes(fragmentation_method,PCT_ON_TARGET, color = fragmentation_method)) + 
+  geom_boxplot()+
+  geom_hline(yintercept = mean(all_seq_hsmetrics_pass$PCT_ON_TARGET), colour = 'black', linetype = 2)+
+  coord_cartesian(clip = 'off') +
+  annotate("text", x= 2.55, y = yintercept *1.05, label = str_c(yintercept,"%")) +
+  theme(plot.margin = unit(c(1,3,1,1), "lines")) +
+  stat_compare_means(method = "t.test",vjust = 1, hjust = 0.5) +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "DNA Fragmentation Method", 
+    y = "On Target Rate %"
+    ) +
+  guides(colour = "none") 
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_on_target_rate_across_runs_frag.pdf", device = "pdf", width = 3, height = 3, units = "in")
+```
+
+# Supplemental: insetsizemetrics
+```{r}
+# Pkot median insert size by fragmentation method
+all_seq_insertsize_pass <- all_seq_insertsize %>% filter(SampleID %in% all_seq_hsmetrics_pass$SampleID)
+
+yintercept <- all_seq_insertsize %>% pull(MEDIAN_INSERT_SIZE) %>% mean() %>% round(digits=0)
+ggplot(all_seq_insertsize %>% filter(!fragmentation_method == "NA"), aes(fragmentation_method,MEDIAN_INSERT_SIZE, group = fragmentation_method)) + 
+  geom_boxplot() +
+  geom_jitter(aes(fragmentation_method,MEDIAN_INSERT_SIZE, color = fragmentation_method), alpha=0.3) +
+  geom_hline(yintercept = yintercept, colour = 'black', linetype = 2)+
+  coord_cartesian(clip = 'off') +
+  annotate("text", x= 2.55, y = yintercept *1.05, label = str_c(yintercept)) +
+  theme(plot.margin = unit(c(3,3,1,3), "lines")) +
+  stat_compare_means(method = "t.test",vjust = 2, hjust = 0.5) +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank()
+    ) +
+  labs(
+    x = "DNA Fragmentation Method", 
+    y = "Median Insert Size"
+    ) +
+  guides(colour = "none") 
+ggsave(filename="/Users/etisinhawork/PreCISE/mean_insertsize_frag.pdf", device = "pdf", width = 3, height = 3, units = "in")
+```
+
+### QC by fragmentation
+
+# Limit of Detection
+
+```{r}
+# Filter for calls that pass all filters defined 
+control_seq_calls_annotated_filtered <- control_seq_calls_annotated_final
+#%>% filter(calls_classified_allvaf == TRUE)
+
+# Add annotations for plots: protChange, variant, ControlType, dilser_dilution
+control_seq_calls_annotated_filtered$protChange <- control_seq_calls_annotated_filtered$HGVSp %>% sapply(.,function(x) strsplit(as.character(x),":")[[1]][2])
+control_seq_calls_annotated_filtered$variant <- str_c(control_seq_calls_annotated_filtered$Gene, control_seq_calls_annotated_filtered$protChange, sep = " ")
+control_seq_calls_annotated_filtered <- control_seq_calls_annotated_filtered %>% 
+  mutate(ControlType = case_when(grepl('NA12878', SampleID) ~ 'NA12878',
+      grepl('AMLMutationMix', SampleID) ~ 'AMLMutationMix',
+      grepl('CH2xDilSer', SampleID) ~ 'CH2xDilSer',
+      grepl('CH4xDilSer', SampleID) ~ 'CH4xDilSer',
+      grepl('NPB177', SampleID) ~ 'NPB177',
+      grepl('Control', SampleID) ~ 'Control',
+      TRUE ~ 'NA'
+  ))
+control_seq_calls_annotated_filtered <- control_seq_calls_annotated_filtered %>% 
+  mutate(dilser_dilution = case_when(grepl('1-10', SampleID) ~ '1:10',
+      grepl('1-100', SampleID) ~ '1:100',
+      grepl('1-20', SampleID) ~ '1:20',
+      grepl('1-50', SampleID) ~ '1:50',
+      grepl('1-80', SampleID) ~ '1:80',
+      grepl('1-4', SampleID) ~ '1:4',
+      grepl('1-2', SampleID) ~ '1:2',
+      grepl('1_10', SampleID) ~ '1:10',
+      grepl('1_100', SampleID) ~ '1:100',
+      grepl('1_20', SampleID) ~ '1:20',
+      grepl('1_50', SampleID) ~ '1:50',
+      grepl('1_80', SampleID) ~ '1:80',
+      grepl('1_4', SampleID) ~ '1:4',
+      grepl('1_2', SampleID) ~ '1:2',
+TRUE ~ '1:1'))
+control_seq_calls_annotated_filtered$dilser_dilution <- factor(control_seq_calls_annotated_filtered$dilser_dilution, c("1:1", "1:2", "1:4", "1:10","1:20","1:50","1:80","1:100"))
+control_seq_calls_annotated_filtered <- control_seq_calls_annotated_filtered %>% 
+  mutate(dilser_dna = case_when(grepl('in125', SampleID) ~ '125 ng',
+      grepl('in75', SampleID) ~ '75 ng',
+      grepl('125ng', SampleID) ~ '125 ng',
+      grepl('250ng', SampleID) ~ '250 ng',
+      TRUE ~ '250 ng'
+  ))
+control_seq_calls_annotated_filtered$dilser_dna <- factor(control_seq_calls_annotated_filtered$dilser_dna, c("75 ng", "125 ng", "250 ng"))
+control_seq_calls_annotated_filtered$labid <- control_seq_calls_annotated_filtered$SampleID %>% 
+    sapply(.,function(x) strsplit(as.character(x),"_")[[1]][2]) %>% sapply(.,function(x) strsplit(as.character(x),"-")[[1]][1])
+
+# merge with dilser.expected columns
+control_seq_calls_annotated_filtered <- control_seq_calls_annotated_filtered %>% left_join(dilser.expected, by = c("lesionID", "variant", "labid")) %>%
+  mutate(VariantInDilSer = !is.na(dilser_expected_vaf))
+```
+
+# Re-do: Control sample variants filtering 
+```{r}
+# re-do ponRecurring Filter and ponPositionFilter (based on ponLesionCount, ponPositionCount)
+
+# get the pon counts from the PON samples
+control_seq_calls_annotated_final_pon <- control_seq_calls_annotated_final %>% filter(isPON == TRUE) %>% select(lesionID, ponLesionCount, positionID, ponPositionCount) %>% unique()
+
+# update the pon counts for the rest of the patient samples
+# Join the dataframes based on lesionID
+control_seq_calls_annotated_filtered_updatedpon <- control_seq_calls_annotated_filtered %>%
+  left_join(control_seq_calls_annotated_final_pon %>% select(lesionID, ponLesionCount) %>% unique(), by = "lesionID") %>%
+  mutate(ponLesionCount = coalesce(ponLesionCount.y, ponLesionCount.x)) %>%
+  select(-ponLesionCount.x, -ponLesionCount.y)
+
+control_seq_calls_annotated_filtered_updatedpon <- control_seq_calls_annotated_filtered_updatedpon %>%
+  left_join(control_seq_calls_annotated_final_pon %>% select(positionID, ponPositionCount) %>% unique(), by = "positionID") %>%
+  mutate(ponPositionCount = coalesce(ponPositionCount.y, ponPositionCount.x)) %>%
+  select(-ponPositionCount.x, -ponPositionCount.y)
+
+```
+
+```{r}
+lesions_blacklist <- read_tsv(file = "/Users/etisinhawork/PreCISE/blacklist.April2024.txt")
+positions_blacklist <- read_tsv(file = "/Users/etisinhawork/PreCISE/blacklist.position.April2024.txt")
+
+# add BlackListPass filter
+num_samples <- all_seq_hsmetrics_pass$SampleID %>% unique() %>% length()
+control_seq_calls_annotated_filtered_updatedpon <- control_seq_calls_annotated_filtered_updatedpon %>%
+  mutate(
+    blacklistLesionFilter = !(lesionID %in% lesions_blacklist$ponlesionID),
+    blacklistPositionFilter = !(positionID %in% positions_blacklist$ponpositionID),
+    ponRecurringFilter = !(ponLesionCount > 1),
+    ponPositionFilter = !(ponPositionCount > 2),
+    recurringFilter = !(lesionCount > (0.05 * num_samples) & VAF > 0.004),
+    positionFilter = !(positionCount > (0.1 * num_samples) & VAF > 0.004)
+  )
+#saveRDS(control_seq_calls_annotated_filtered_updatedpon, "control_seq_calls_annotated_filtered_updatedpon.rda")
+control_seq_calls_annotated_filtered_updatedpon <- readRDS("control_seq_calls_annotated_filtered_updatedpon.rda")
+```
+
+```{r}
+control_seq_calls_annotated_filtered_final <- control_seq_calls_annotated_filtered_updatedpon %>% 
+  # filter((recurringFilter & positionFilter & ponPositionFilter & ponRecurringFilter & blacklistLesionFilter & blacklistPositionFilter) | CosmicCount >= 10 | grepl("TCGA", TCGA) | posCtrlFilter) %>% 
+  # filter((EntropyLeft > 1 & EntropyCenter > 1 & EntropyRight > 1) | CosmicCount >= 10 | grepl("TCGA", TCGA) | VAF > 0.02 | posCtrlFilter) %>% 
+  # filter(Gene %in% precisegenes)
+```
+
+# Percentage of expected calls
+```{r}
+control_seq_calls_annotated_filtered_final <- control_seq_calls_annotated_filtered_updatedpon %>% 
+  as.data.frame %>% 
+  filter(AltFwd >= 3) %>% 
+  filter(AltRev >= 3) %>% 
+  filter(VAF * Depth >= 8) %>% 
+  filter(!(Gene == "GNAS" & Exon == '1/13')) %>% 
+  filter(grepl('missense|splice_[ad]|stop_|frameshift|inframe_[id]', Consequence)) %>%
+  filter(QUAL > 45) %>% 
+  filter(PSTD != 0) %>% 
+  filter(PMEAN > 25 & PMEAN < 75) %>% 
+  filter(!((ODDRATIO > 2.5 & SBF < 0.1) | ODDRATIO == 0)) %>% 
+  filter(QMEAN > 30) %>% 
+  filter((MSI < 10 | (MSI * MSILEN > 5 & VAF > 0.1))) %>% 
+  filter(VAF > 0.01) %>% 
+  filter(VAF < 0.3 | VariantInDilSer) %>% 
+  filter((recurringFilter & positionFilter & ponPositionFilter & ponRecurringFilter & blacklistLesionFilter & blacklistPositionFilter) | grepl("TCGA", TCGA) | posCtrlFilter) %>% 
+  filter((EntropyLeft > 1 & EntropyCenter > 1 & EntropyRight > 1) | CosmicCount >= 10 | grepl("TCGA", TCGA) | VAF > 0.02 | posCtrlFilter)
+```
+
+```{r}
+# Annotate: High confidence call, force call, not selected
+high_confidence_control_calls <- control_seq_calls_annotated_filtered_final %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "250 ng") %>% unique()
+force_call_control_calls <- control_seq_calls_annotated_filtered_updatedpon %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "250 ng") %>% unique()
+
+calculate_perc_conf_calls <- function(high_confidence_control_calls, force_call_control_calls){
+
+  missing_variants <- dilser.expected %>% subset(!variant %in% force_call_control_calls$variant) %>% select(variant) %>%  unique()
+  dilser.expected_filtered <- dilser.expected %>% subset(!variant %in% missing_variants$variant)
+  
+  # not selected: 
+  # expected variants for every sample in dilser.expected_filtered
+  expected_num_variants_df <- dilser.expected_filtered %>% unique() %>% select(labid) %>% unique() 
+  expected_num_variants_df %<>% merge(.,dilser.expected_filtered %>% unique() %>% filter(dilser_expected_vaf > 0) %>% select(labid) %>% table() %>% as.data.frame(), by = "labid", all = T) %>% 
+    rename(.,any_vaf = Freq)
+  expected_num_variants_df %<>% merge(.,dilser.expected_filtered %>% unique() %>% filter(dilser_expected_vaf > 1) %>% select(labid) %>% table() %>% as.data.frame(), by = "labid", all = T) %>%
+    rename(., `>1%` = Freq)
+  expected_num_variants_df %<>% merge(.,dilser.expected_filtered %>% unique() %>% filter(dilser_expected_vaf > 2) %>% select(labid) %>% table() %>% as.data.frame(), by = "labid", all = T) %>%
+    rename(., `>2%` = Freq)
+  expected_num_variants_df %<>% merge(.,dilser.expected_filtered %>% unique() %>% filter(dilser_expected_vaf > 10) %>% select(labid) %>% table() %>% as.data.frame(), by = "labid", all = T) %>%
+    rename(., `>10%` = Freq)
+  expected_num_variants_df %<>% merge(.,force_call_control_calls %>% select(SampleID, labid) %>% unique() %>% select(labid) %>% table() %>% as.data.frame(), by = "labid", all = T) %>%
+    rename(., num_samples = Freq)
+  
+  # expected total variants for all QC-passed samples
+  expected_num_variants_df$total_expected_any_vaf <- expected_num_variants_df$any_vaf * expected_num_variants_df$num_samples
+  expected_num_variants_df$`total_expected_>1%` <- expected_num_variants_df$`>1%` * expected_num_variants_df$num_samples
+  expected_num_variants_df$`total_expected_>2%` <- expected_num_variants_df$`>2%` * expected_num_variants_df$num_samples
+  expected_num_variants_df$`total_expected_>10%` <- expected_num_variants_df$`>10%` * expected_num_variants_df$num_samples
+  expected_num_variants_df %<>% replace(is.na(.), 0)
+  
+  # Prepare data for plotting
+  proportional_expected_calls_df <- expected_num_variants_df %>% select(total_expected_any_vaf:`total_expected_>10%`) %>% colSums() %>% as.data.frame() %>%
+    rename(., total_expected = `.`)
+  proportional_expected_calls_df$force_call <- c(force_call_control_calls %>% nrow(), 
+                                                 force_call_control_calls %>% filter(dilser_expected_vaf > 1) %>% nrow(),
+                                                 force_call_control_calls %>% filter(dilser_expected_vaf > 2) %>% nrow(),
+                                                 force_call_control_calls %>% filter(dilser_expected_vaf > 10) %>% nrow())
+  proportional_expected_calls_df$high_confidence <- c(high_confidence_control_calls %>% nrow(), 
+                                                 high_confidence_control_calls %>% filter(dilser_expected_vaf > 1) %>% nrow(),
+                                                 high_confidence_control_calls %>% filter(dilser_expected_vaf > 2) %>% nrow(),
+                                                 high_confidence_control_calls %>% filter(dilser_expected_vaf > 10) %>% nrow())
+  # scale to percentages
+  proportional_expected_calls_df$total_expected_perc <- proportional_expected_calls_df$total_expected / proportional_expected_calls_df$total_expected * 100
+  proportional_expected_calls_df$not_detected_perc <- (proportional_expected_calls_df$total_expected - proportional_expected_calls_df$force_call) / proportional_expected_calls_df$total_expected * 100
+  proportional_expected_calls_df$force_call_perc <- (proportional_expected_calls_df$force_call - proportional_expected_calls_df$high_confidence) / proportional_expected_calls_df$total_expected * 100
+  proportional_expected_calls_df$high_confidence_perc <- (proportional_expected_calls_df$high_confidence) / proportional_expected_calls_df$total_expected * 100
+  
+  return(proportional_expected_calls_df)
+}
+
+proportional_expected_calls_df <- calculate_perc_conf_calls(high_confidence_control_calls, force_call_control_calls)
+
+#saveRDS(proportional_expected_calls_df, "proportional_expected_calls_df.rda")
+proportional_expected_calls_df <- readRDS("proportional_expected_calls_df.rda")
+```
+
+
+```{r}
+# calculate percentage of calls detected for other DNA inputs: 75 and 125
+high_confidence_control_calls_75 <- control_seq_calls_annotated_filtered_final %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "75 ng") %>% unique()
+force_call_control_calls_75 <- control_seq_calls_annotated_filtered_updatedpon %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "75 ng") %>% unique()
+
+proportional_expected_calls_df_75 <- calculate_perc_conf_calls(high_confidence_control_calls_75, force_call_control_calls_75)
+
+high_confidence_control_calls_125 <- control_seq_calls_annotated_filtered_final %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "125 ng") %>% unique()
+force_call_control_calls_125 <- control_seq_calls_annotated_filtered_updatedpon %>% filter(VariantInDilSer == TRUE) %>% filter(dilser_dna == "125 ng") %>% unique()
+
+proportional_expected_calls_df_125 <- calculate_perc_conf_calls(high_confidence_control_calls_125, force_call_control_calls_125)
+
+```
+
+# Figure 1F: Percentage of expected calls
+```{r}
+# pivot dataframe for ggplot
+proportional_expected_calls_figure_df <- proportional_expected_calls_df %>% select(not_detected_perc, force_call_perc, high_confidence_perc) %>% as.data.frame()
+proportional_expected_calls_figure_df$vaf_min <- row.names(proportional_expected_calls_figure_df)
+proportional_expected_calls_figure_df_longer <- proportional_expected_calls_figure_df %>% pivot_longer(cols = c(not_detected_perc, force_call_perc, high_confidence_perc))
+
+# convert to factors
+proportional_expected_calls_figure_df_longer$vaf_min <- factor(proportional_expected_calls_figure_df_longer$vaf_min, c("total_expected_any_vaf", "total_expected_>1%", "total_expected_>2%", "total_expected_>10%"))
+proportional_expected_calls_figure_df_longer$name <- factor(proportional_expected_calls_figure_df_longer$name, c("not_detected_perc", "force_call_perc", "high_confidence_perc"))
+
+#plot as proportional barplot
+ggbarplot(proportional_expected_calls_figure_df_longer %>% filter(vaf_min %in% c("total_expected_>1%", "total_expected_>2%")), "vaf_min", "value",
+  fill = "name", color = "black") +
+  labs(
+    x = "VAF",
+    y = "Percentage of Expected Calls"
+  ) +
+  scale_fill_discrete(labels=c("Not Detected", "Force Call", "High Confidence")) +
+  scale_x_discrete(labels = c("VAF>1%", "VAF>2%")) +
+  theme(legend.title = element_blank(), text=element_text(size=8))
+ggsave(filename="/Users/etisinhawork/PreCISE/proportional_expected_calls_by_vaf_1vs2.pdf", device = "pdf", width = 3, height = 3, units = "in")
+```
+
+# Variants in Dilution Series only: Filter and Annotate
+```{r}
+# filteres for variants in dilser.expected 
+control_seq_calls_annotated_indilser <- control_seq_calls_annotated_filtered_updatedpon %>% filter(VariantInDilSer == TRUE) %>% unique()
+```
+
+```{r}
+# only include samples that passed QC: 51/68 control samples pass QC
+control_seq_calls_annotated_indilser_samplepass <- control_seq_calls_annotated_indilser %>% subset(control_seq_calls_annotated_indilser$SampleID %in% all_seq_hsmetrics_pass$SampleID) %>% select(SampleID) %>% unique()
+
+control_seq_calls_annotated_indilser %<>% subset(control_seq_calls_annotated_indilser$SampleID %in% control_seq_calls_annotated_indilser_samplepass$SampleID)
+```
+
+```{r}
+control_seq_calls_annotated_indilser$observed_vaf <- control_seq_calls_annotated_indilser$VAF * 100
+control_seq_calls_annotated_indilser$dilser_percdiff <- (control_seq_calls_annotated_indilser$observed_vaf - control_seq_calls_annotated_indilser$dilser_expected_vaf)/(control_seq_calls_annotated_indilser$dilser_expected_vaf)
+
+#saveRDS(control_seq_calls_annotated_indilser, "control_seq_calls_annotated_indilser.rda")
+control_seq_calls_annotated_indilser <- readRDS("control_seq_calls_annotated_indilser.rda")
+```
+
+# Plot control variants
+# Figure 1.E: Expected vs Observed VAF by DNA Input
+```{r}
+# Plot description: scatter plot with Expected vs Observed VAF by DNA Input
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_expected_vaf, y=observed_vaf, colour = dilser_dna)) + 
+  geom_point(alpha = 0.5) +
+  stat_poly_line() +
+  stat_poly_eq(use_label(c("R2","P"))) +
+  labs(
+    x = "Expected VAF", 
+    y = "Observed VAF",
+    colour = "DNA Input",
+    shape = "DNA Input"
+  ) +
+  ggpubr::theme_pubr() 
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_dnainput.pdf", device = "pdf", width = 4, height = 4, units = "in")
+```
+
+```{r}
+# Plot description: scatter plot with Expected vs Observed VAF by DNA Dilution
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_expected_vaf, y=observed_vaf, colour = dilser_dilution)) + 
+  geom_point(alpha = 0.5) +
+  stat_poly_line() +
+  stat_poly_eq(use_label(c("R2","P","n"))) +
+  labs(
+    x = "Expected VAF", 
+    y = "Observed VAF",
+    colour = "DNA Dilution",
+    shape = "DNA Dilution"
+  ) +
+  ggpubr::theme_pubr()
+```
+
+```{r}
+# Plot description: scatter plot with Expected vs Observed VAF by DNA Input
+# control_seq_calls_annotated_indilser <- control_seq_calls_annotated_indilser %>%
+#   mutate(fragmentation_method = ifelse(Sequencing_run == "Elemento_NMT_12252", "enzymatic", fragmentation_method))
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_expected_vaf, y=observed_vaf, colour = fragmentation_method)) + 
+  geom_point(alpha = 0.5) +
+  stat_poly_line() +
+  stat_poly_eq(use_label(c("R2","P"))) +
+  labs(
+    x = "Expected VAF", 
+    y = "Observed VAF",
+    colour = "Fragmentation",
+    shape = "Fragmentation"
+  ) +
+  ggpubr::theme_pubr() +
+  theme(legend.title = element_blank())
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_fragmentation_method.pdf", device = "pdf", width = 4, height = 4, units = "in")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Expected vs Observed at the individual variant and dilution facet-grid
+# WAYY TOO NOISY
+ggscatter(control_seq_calls_annotated_indilser, 
+          x="dilser_expected_vaf", 
+          y="observed_vaf", 
+          color = "dilser_dna",
+          size = 1,
+          add.params = list(color = "blue", fill = "lightgray"),
+          conf.int = TRUE, # Add confidence interval
+          cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")) +
+  facet_grid(variant~dilser_dilution) +
+  theme(strip.text.y = element_text(angle = 0)) +
+  labs(
+    x = "Expected VAF", 
+    y = "Observed VAF", 
+    colour = "DNA Input",
+    title = "Expected vs Observed of Known Variants in Control Samples",
+    subtitle = "From 48 control samples from 10 sequencing runs"
+  )
+
+# Get unique values of variant and dilser_dilution
+variants <- unique(control_seq_calls_annotated_indilser$variant)
+dilutions <- levels(control_seq_calls_annotated_indilser$dilser_dilution)
+
+# Create a list to store individual plots
+plots_list <- list()
+
+# Nested loop to create scatter plots
+for (variantx in variants) {
+  for (dilution in dilutions) {
+    subset_data <- subset(control_seq_calls_annotated_indilser, 
+                          variant == variantx & dilser_dilution == dilution)
+    
+    # Create a scatter plot for each combination
+    plot <- ggscatter(subset_data, 
+                      x = "dilser_expected_vaf", 
+                      y = "observed_vaf", 
+                      color = "dilser_dna", 
+                      size = 1, 
+                      add = "reg.line",
+                      add.params = list(color = "black", fill = "lightgray"), 
+                      legend = "none") +
+      labs(
+        x = "Expected VAF", 
+        y = "Observed VAF", 
+        title = paste(variantx, ":", dilution)
+      ) +
+      theme(
+        axis.text = element_text(size = 5),  # Adjust the size of axis labels
+        axis.title = element_text(size = 5),  # Adjust the size of axis titles
+        text = element_text(size=5)
+      ) +
+      coord_obs_pred(ratio = 1, clip = "on")
+    
+    # Add the plot to the list
+    plots_list[[length(plots_list) + 1]] <- plot
+  }
+}
+
+# Single color label for the entire grid
+color_legend <- ggplot(control_seq_calls_annotated_indilser, aes(x = 1, y = 1, color = dilser_dna)) +
+  geom_point() +
+  theme_void() +
+  labs(color = "DNA Input", title.size = 0.5) +
+  guides(shape = guide_legend(override.aes = list(size = 0.5)))
+
+# Arrange the plots and color legend in a grid
+g <- grid.arrange(grobs = c(plots_list, list(color_legend)), ncol = length(dilutions))
+
+ggsave(g, filename="/Users/etisinhawork/PreCISE/expected_vs_observed_arranged.tiff", device = "tiff", width = 20, height = 20, units = "in")
+```
+
+```{r}
+# Observed VAF bar plot, split by variant, colored by dilution, ordered by variant
+
+# min_observations <- 3
+# t_test_results <- control_seq_calls_annotated_indilser %>%
+#   group_by(dilser_dilution, variant) %>%
+#   filter(
+#     n() >= min_observations,
+#     all(!is.na(observed_vaf)),
+#     all(!is.na(factor(dilser_dna)))
+#   ) %>%
+#   t_test(observed_vaf ~ dilser_dna, ref.group = "250 ng")
+# ggbloxplot for looking at VAF for each mg of DNA
+
+g <- grid.arrange(
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('ASXL1 p.Gly646TrpfsTer12', 'NRAS p.Gly13Arg','FLT3 p.Ala848Pro','FLT3 p.Asp835Val')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='top') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45), 
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('FLT3 p.Asp835Tyr', 'FLT3 p.Asp835His','FLT3 p.Ala814Thr','FLT3 p.Phe594_Asn609dup')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+   
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('FLT3 p.Tyr597_Glu604dup', 'FLT3 p.Phe594_Asp600dup','IDH2 p.Arg140Gln','SRSF2 p.Pro95Leu')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('CEBPA p.Asn293GlnfsTer28', 'CEBPA p.Arg286ProfsTer35','DNMT3A p.Arg882His','ASXL1 p.Tyr591Ter')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('RUNX1 p.Val419GlyfsTer176', 'RUNX1 p.Leu317ThrfsTer283','TET2 p.Gln324HisfsTer23','TET2 p.Gln622Ter')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('TET2 p.Asn1387Ser', 'NPM1 p.Trp288CysfsTer12')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF", 
+      color = "DNA Input"
+    ) +
+    rotate_x_text(angle = 45),
+  nrow=6)
+
+ggsave(g, filename="/Users/etisinhawork/PreCISE/observedvaf_perdilution_dnainput.pdf", device = "pdf", width = 8, height = 12, units = "in")
+```
+
+```{r}
+# Supplemental 1: Observed VAF bar plot GRID, split by variant, colored by dilution, ordered by variant
+# For loop version of plot above, with expected VAF as a line 
+# Observed VAF bar plot, split by variant, colored by dilution, ordered by variant
+
+# Get unique values of variant and dilser_dilution
+variants <- unique(control_seq_calls_annotated_indilser$variant)
+labids_dnainput_dilution <- control_seq_calls_annotated_indilser %>% filter(dilser_dna == "75 ng") %>% select(labid) %>% unique()
+dilution_dnainput_dilution <- control_seq_calls_annotated_indilser %>% filter(dilser_dna == "75 ng") %>% select(dilser_dilution) %>% unique()
+
+# Create a list to store individual plots
+plots_list <- list()
+
+# Nested loop to create scatter plots
+for (variantx in variants) {
+  subset_data <- subset(control_seq_calls_annotated_indilser, variant == variantx) %>% 
+    subset(labid %in% labids_dnainput_dilution$labid) %>% 
+    subset(dilser_dilution %in% dilution_dnainput_dilution$dilser_dilution) 
+    
+    # Create a scatter plot for each combination
+    plot <- ggboxplot(subset_data, 
+            y="observed_vaf", 
+            color = "dilser_dna", 
+            add = "jitter") +
+      facet_wrap(~ dilser_dilution, strip.position = "top") +
+      geom_hline(data = subset_data, aes(yintercept = dilser_expected_vaf), linetype = 'dotted') +
+      theme(strip.text.y = element_text(angle = 0), 
+            axis.text.x=element_blank(),
+            strip.background = element_blank(),
+            panel.border = element_rect(colour = "black", fill=NA),
+            plot.title = element_text(size = 10)) +
+      theme(legend.position='none') +
+      labs(
+        x = "Dilution", 
+        y = "Observed VAF", 
+        color = "DNA Input",
+        title = variantx
+        )
+    
+    # Add the plot to the list
+    plots_list[[length(plots_list) + 1]] <- plot
+}
+
+# Single color label for the entire grid
+color_legend <- ggplot(control_seq_calls_annotated_indilser, aes(x = 1, y = 1, color = dilser_dna)) +
+  geom_point() +
+  theme_void() +
+  labs(color = "DNA Input", title.size = 0.5) +
+  guides(shape = guide_legend(override.aes = list(size = 0.5)))
+
+# Arrange the plots and color legend in a grid
+g <- grid.arrange(grobs = c(plots_list, list(color_legend)), ncol = 4)
+ggsave(g, filename="/Users/etisinhawork/PreCISE/observedvaf_perdilution_dnainput_grid.pdf", device = "pdf", width = 8, height = 12, units = "in")
+```
+
+# Supp Table 2: Control Variants expected vs observed VAF
+```{r}
+# convert grid plot above to a table
+control_table_mean_vaf <- control_seq_calls_annotated_indilser %>% 
+  select(labid, 
+         dilser_primary, 
+         variant, 
+         dilser_dilution, 
+         dilser_dna, 
+         dilser_vafprimary, 
+         dilser_expected_vaf, 
+         observed_vaf) %>% 
+  unique() %>% 
+  group_by(labid, dilser_primary, variant, dilser_dilution, dilser_dna, dilser_vafprimary, dilser_expected_vaf) %>% 
+  summarise(mean_observed_vaf = mean(observed_vaf), 
+            min_observed_vaf = min(observed_vaf), 
+            max_observed_vaf = max(observed_vaf), 
+            sd_observed_vaf = sd(observed_vaf),
+            n_observed_samples = n())
+write_csv(control_table_mean_vaf, "Supplement_Table_2_ObservedControlVariants.csv")
+```
+
+```{r}
+# Observed VAF bar plot, split by variant, colored by dilution, ordered by variant, only 250ng DNA 
+
+g <- grid.arrange(
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1" & dilser_dna == "250 ng") %>% 
+              subset(variant %in% c('ASXL1 p.Gly646TrpfsTer12', 'NRAS p.Gly13Arg','FLT3 p.Ala848Pro','FLT3 p.Asp835Val', 'FLT3 p.Asp835Tyr', 'FLT3 p.Asp835His','FLT3 p.Ala814Thr','FLT3 p.Phe594_Asn609dup', 'FLT3 p.Tyr597_Glu604dup', 'FLT3 p.Phe594_Asp600dup','IDH2 p.Arg140Gln','SRSF2 p.Pro95Leu')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "variant", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='top') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    ylim(0,7) +
+    rotate_x_text(angle = 45), 
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1" & dilser_dna == "250 ng") %>% 
+              subset(variant %in% c('CEBPA p.Asn293GlnfsTer28', 'CEBPA p.Arg286ProfsTer35','DNMT3A p.Arg882His','ASXL1 p.Tyr591Ter', 'RUNX1 p.Val419GlyfsTer176', 'RUNX1 p.Leu317ThrfsTer283','TET2 p.Gln324HisfsTer23','TET2 p.Gln622Ter', 'TET2 p.Asn1387Ser', 'NPM1 p.Trp288CysfsTer12')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "variant", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='top') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    ylim(0,7) +
+    rotate_x_text(angle = 45)
+    )
+
+
+ggsave(g, filename="/Users/etisinhawork/PreCISE/observedvaf_pervariant_dilution", device = "pdf", width = 12, height = 18, units = "in")
+
+#geom_hline(yintercept = control_seq_calls_annotated_indilser$dilser_expected_vaf, colour = 'black', linetype = 2) +
+```
+
+# Supplemental 1: Observed vs Expected (x vs y) plot for each of the 22 variants, colored by dilution
+```{r}
+# Looped/arrange version of plot above - but changed to Observed vs Expected (x vs y) plot
+# Get unique values of variant and dilser_dilution
+variants <- unique(control_seq_calls_annotated_indilser$variant)
+
+variants_reordered <- control_seq_calls_annotated_indilser %>% select(variant, dilser_expected_vaf) %>% unique() %>% group_by(variant) %>% summarize(max_vaf = max(dilser_expected_vaf)) %>% arrange(desc(max_vaf)) %>% select(variant) %>% as.list(all.names = FALSE)
+
+# Create a list to store individual plots
+plots_list <- list()
+
+# Nested loop to create scatter plots
+for (variantx in variants_reordered$variant) {
+  subset_data <- subset(control_seq_calls_annotated_indilser, variant == variantx) %>% 
+    filter(dilser_dna == "250 ng")
+    
+    # Create a scatter plot for each combination
+    plot <- ggscatter(subset_data, 
+            y="observed_vaf", 
+            x = "dilser_expected_vaf",
+            color = "dilser_dilution") +
+      stat_poly_line() +
+      stat_poly_eq(use_label(c("R2","P"))) +
+      theme(strip.text.y = element_text(angle = 0), 
+            axis.text.x=element_blank(),
+            panel.border = element_rect(colour = "black", fill=NA),
+            plot.title = element_text(size = 10)) +
+      geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+      theme(legend.position='none') +
+      labs(
+        x = "Expected VAF", 
+        y = "Observed VAF", 
+        color = "DNA Input",
+        title = variantx
+        )
+    
+    # Add the plot to the list
+    plots_list[[length(plots_list) + 1]] <- plot
+}
+
+# Single color label for the entire grid
+color_legend <- ggplot(control_seq_calls_annotated_indilser, aes(x = 1, y = 1, color = dilser_dilution)) +
+  geom_point() +
+  theme_void() +
+  labs(color = "Dilution", title.size = 1) +
+  guides(shape = guide_legend(override.aes = list(size = 1)))
+
+# Arrange the plots and color legend in a grid
+g <- grid.arrange(grobs = c(plots_list, list(color_legend)), ncol = 4)
+ggsave(g, filename="/Users/etisinhawork/PreCISE/observedvaf_pervariant_dilution_grid_ordered.pdf", device = "pdf", width = 12, height = 18, units = "in")
+```
+
+
+
+
+```{r}
+# repeatability of control sample variant across multiple runs 
+# original version of supplemental 1
+g <- grid.arrange(
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('ASXL1 p.Gly646TrpfsTer12', 'NRAS p.Gly13Arg','FLT3 p.Ala848Pro','FLT3 p.Asp835Val')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='top') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45), 
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('FLT3 p.Asp835Tyr', 'FLT3 p.Asp835His','FLT3 p.Ala814Thr','FLT3 p.Phe594_Asn609dup')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+   
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('FLT3 p.Tyr597_Glu604dup', 'FLT3 p.Phe594_Asp600dup','IDH2 p.Arg140Gln','SRSF2 p.Pro95Leu')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('CEBPA p.Asn293GlnfsTer28', 'CEBPA p.Arg286ProfsTer35','DNMT3A p.Arg882His','ASXL1 p.Tyr591Ter')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('RUNX1 p.Val419GlyfsTer176', 'RUNX1 p.Leu317ThrfsTer283','TET2 p.Gln324HisfsTer23','TET2 p.Gln622Ter')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF"
+    ) +
+    rotate_x_text(angle = 45),
+  ggboxplot(control_seq_calls_annotated_indilser %>% 
+              filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% 
+              subset(variant %in% c('TET2 p.Asn1387Ser', 'NPM1 p.Trp288CysfsTer12')) %>% 
+              subset(dilser_dilution %in% c("1:10","1:20","1:40")), 
+            x="dilser_dilution", y="observed_vaf", color = "dilser_dna", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    theme(legend.position='none') +
+    labs(
+      x = "Dilution", 
+      y = "Observed VAF", 
+      color = "DNA Input"
+    ) +
+    rotate_x_text(angle = 45),
+  nrow=6)
+
+ggsave(g, filename="/Users/etisinhawork/PreCISE/observedvaf_perdilution_dnainput.pdf", device = "pdf", width = 8, height = 12, units = "in")
+```
+
+```{r}
+# Only 8 variants- ignore
+grid.arrange(
+  ggboxplot(control_seq_calls_annotated_indilser %>% filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% subset(variant %in% c('ASXL1 p.Gly646TrpfsTer12', 'IDH2 p.Arg140Gln','FLT3 p.Ala814Thr','SRSF2 p.Pro95Leu')), x="dilser_dilution", y="dilser_percdiff", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    labs(
+      x = "Dilution", 
+      y = "(O-E)/E VAF", 
+      color = "DNA Input",
+      title = "% Difference in VAF of Per Variant in Control Samples"
+    ) +
+    rotate_x_text(angle = 45), 
+  ggboxplot(control_seq_calls_annotated_indilser %>% filter(dilser_expected_vaf <30 & dilser_dilution != "1:1") %>% subset(variant %in% c('DNMT3A p.Arg882His', 'ASXL1 p.Tyr591Ter','TET2 p.Gln622Ter','TET2 p.Asn1387Ser')), x="dilser_dilution", y="dilser_percdiff", add = "jitter") +
+    facet_grid(~variant ) +
+    theme(strip.text.y = element_text(angle = 0)) +
+    labs(
+      x = "Dilution", 
+      y = "(O-E)/E VAF", 
+      color = "DNA Input"
+    ) +
+    rotate_x_text(angle = 45),
+  nrow=2)
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_percdifference_pervariant.tiff", device = "tiff", width = 10, height = 6, units = "in")
+
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_dilution, y=dilser_percdiff, color = dilser_dna)) + 
+  geom_boxplot() +
+  facet_grid(~variant, scales = "free") +
+  theme(axis.text.x = element_text(angle=45, vjust=1, size=11, hjust=1)) +
+  labs(
+    x = "Dilutions", 
+    y = "(O-E)/E", 
+    colour = "DNA Input",
+    title = "% Difference in VAF of Per Variant in Control Samples",
+    subtitle = "From 48 control samples in 10 sequencing runs"
+  ) 
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_percdifference_pervariant.tiff", device = "tiff", width = 10, height = 6, units = "in")
+```
+
+```{r}
+# plotting (O-E)/E
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_dilution, y=dilser_percdiff, color = dilser_dna)) + 
+  geom_boxplot() +
+  theme(strip.text.x = element_text(angle = 45)) +
+  labs(
+    x = "Dilutions", 
+    y = "(O-E)/E", 
+    colour = "DNA Input",
+    title = "% Difference in VAF of Known Variants in Control Samples",
+    subtitle = "From 48 control samples in 10 sequencing runs"
+  )+
+  theme_classic()
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_percdifference.tiff", device = "tiff", width = 10, height = 8, units = "in")
+```
+
+```{r}
+ggplot(control_seq_calls_annotated_indilser, aes(x=dilser_expected_vaf, y=observed_vaf, color = calls_classified_allvaf)) + 
+  geom_point() +
+  theme(strip.text.x = element_text(angle = 45), ) +
+  labs(
+    x = "Expected", 
+    y = "Observed", 
+    colour = "Pass Filters",
+    title = "Expected vs Observed of Known Variants in Control Samples",
+    subtitle = "From 48 control samples in 10 sequencing runs"
+  )+
+  xlim(0,5) +
+  ylim(0,5) +
+  theme_classic()
+                                                                                                  
+```
+
+```{r}
+ggplot(control_seq_calls_annotated_indilser %>% filter(dilser_expected_vaf < 2 & dilser_expected_vaf > 0), 
+       aes(x=dilser_expected_vaf, y=observed_vaf, color = variant)) + 
+  geom_point() +
+  facet_grid(~dilser_dilution) +
+  theme(strip.text.x = element_text(angle = 45)) +
+  labs(
+    x = "Expected VAF", 
+    y = "Observed VAF", 
+    colour = "Variant",
+    title = "Expected vs Observed VAF in <2% Expected_VAF",
+    subtitle = "Understadnding limit of detection for variants whose expected VAF is < 2%"
+  )+
+  theme_classic()
+ggsave(filename="/Users/etisinhawork/PreCISE/expected_vs_observed_lowvaf_cutoff.tiff", device = "tiff", width = 8, height = 6, units = "in")
+```
+
+```{r}
+# heatmap of the VAF 
+
+control_seq_calls_annotated_indilser_heatmap_df <- control_seq_calls_annotated_indilser %>% select(variant, observed_vaf, dilser_dilution, dilser_dna, dilser_expected_vaf, labid) %>% pivot_wider(id_cols = c("variant", "dilser_dna", "dilser_expected_vaf", "labid"), names_from = "dilser_dilution", values_from = observed_vaf, values_fn = mean) %>% pivot_longer(cols = c("1:1","1:20","1:80","1:50","1:10","1:4","1:2"), values_to = "observed_vaf", names_to = "dilser_dilution") %>% filter(!is.na(observed_vaf))
+
+ggplot(control_seq_calls_annotated_indilser_heatmap_df, aes(x=dilser_dilution, y = variant)) +
+  geom_tile(color = "white",
+            lwd = 1.5,
+            linetype = 1) +
+  facet_grid(~dilser_dna) +
+  scale_fill_gradientn(colors = hcl.colors(20, "RdYlGn")) +
+  geom_text(aes(label = observed_vaf %>% round(1)), color = "white", size = 4) +
+  scale_fill_gradient( trans = 'log' ) +
+  coord_fixed() 
+
+
+#using heatmap2
+control_seq_calls_annotated_indilser_wide <- control_seq_calls_annotated_indilser %>% select(variant, observed_vaf, dilser_dilution, dilser_dna, dilser_expected_vaf, labid) %>% pivot_wider(id_cols = c("variant", "dilser_dna", "dilser_expected_vaf", "labid"), names_from = "dilser_dilution", values_from = observed_vaf, values_fn = mean)
+
+# Choose a specific subset of dilutions
+selected_dilutions <- c("1:1", "1:20", "1:80", "1:50", "1:10", "1:4", "1:2")
+
+# Subset the data and create the heatmap
+subset_data <- control_seq_calls_annotated_indilser_wide %>% select("variant", "dilser_dna", "dilser_expected_vaf", selected_dilutions)
+
+# Create a matrix for the heatmap
+heatmap_matrix <- as.matrix(subset_data[, 4:ncol(subset_data)])
+
+# Replace missing values with NA
+heatmap_matrix[is.na(heatmap_matrix)] <- NA
+
+# Create a heatmap using pheatmap
+pheatmap(heatmap_matrix,
+         cluster_rows = FALSE,  # Turn off row clustering
+         cluster_cols = FALSE,  # Turn off column clustering
+         color = rev(colorRampPalette(c("white", "red"))(20)),
+         main = "Heatmap of Dilutions",
+         fontsize_row = 8,      # Adjust row label size
+         fontsize_col = 8,      # Adjust column label size
+         cellwidth = 15,        # Adjust the width of the heatmap cells
+         cellheight = 2,        # Adjust the height of the heatmap cells
+         na_col = "white")      # Set the color for NA values to match the background
+
+```
+
+```{r}
+Heatmap(heatmap_matrix,
+        cluster_rows = FALSE,  # Turn off row clustering
+        cluster_columns = FALSE,  # Turn off column clustering
+        col = rev(colorRampPalette(c("white", "red"))(20)),
+        name = "Heatmap of Dilutions",
+        row_names_gp = gpar(fontsize = 8),  # Adjust row label size
+        column_names_gp = gpar(fontsize = 8),  # Adjust column label size
+        na_col = "white")       # Set the color for NA values to match the background
+```
+
+```{r}
+# instead of VAF, have O-E/E percent change per variant and per dilution (labid and actual O/E values don't matter)
+
+
+```
+
+# Patient Samples Analysis
+
+```{r}
+# Load  file with patient variant calls
+patient_seq_calls_annotated_final_updated
+```
+
+
+```{r}
+# Apply QC filters
+#patient_seq_calls_annotated_final_updated_qc_filter <- patient_seq_calls_annotated_final_updated
+patient_seq_calls_annotated_old_filtered <- readRDS("patient_seq_calls_annotated_filtered.rda")
+
+patient_seq_calls_annotated_final_updated_qc_filter <- patient_seq_calls_annotated_old_filtered %>%
+  as.data.frame %>% 
+  filter(AltFwd >= 3) %>% 
+  filter(AltRev >= 3) %>% 
+  filter(VAF * Depth >= 8) %>% 
+  filter(gnomAD_AF < 0.0025) %>% 
+  filter(!(Gene == "GNAS" & Exon == '1/13')) %>% 
+  filter(grepl('missense|splice_[ad]|stop_|frameshift|inframe_[id]', Consequence)) %>%
+  filter(QUAL > 45) %>% 
+  filter(PSTD != 0) %>% 
+  filter(PMEAN > 25 & PMEAN < 75) %>% 
+  filter(!((ODDRATIO > 2.5 & SBF < 0.1) | ODDRATIO == 0)) %>% 
+  filter(QMEAN > 30) %>% 
+  filter((MSI < 10 | (MSI * MSILEN > 5 & VAF > 0.1))) %>% 
+  filter(VAF > 0.01) %>% 
+  filter(VAF < 0.30) %>%
+  filter(Gene %in% precisegenes)
+```
+
+### Re-do: Patient sample PON filters
+```{r}
+# get the pon counts from the PON samples
+control_seq_calls_annotated_final_pon <- control_seq_calls_annotated_final %>% filter(isPON == TRUE) %>% select(lesionID, ponLesionCount, positionID, ponPositionCount) %>% unique()
+
+# update the pon counts for the rest of the patient samples
+# Join the dataframes based on lesionID
+patient_seq_calls_annotated_final_updated_qc_filter_pon <- patient_seq_calls_annotated_final_updated_qc_filter %>%
+  left_join(control_seq_calls_annotated_final_pon %>% select(lesionID, ponLesionCount) %>% unique(), by = "lesionID") %>%
+  mutate(ponLesionCount = coalesce(ponLesionCount.y, ponLesionCount.x)) %>%
+  select(-ponLesionCount.x, -ponLesionCount.y)
+
+patient_seq_calls_annotated_final_updated_qc_filter_pon <- patient_seq_calls_annotated_final_updated_qc_filter_pon %>%
+  left_join(control_seq_calls_annotated_final_pon %>% select(positionID, ponPositionCount) %>% unique(), by = "positionID") %>%
+  mutate(ponPositionCount = coalesce(ponPositionCount.y, ponPositionCount.x)) %>%
+  select(-ponPositionCount.x, -ponPositionCount.y)
+
+lesions_blacklist <- read_tsv(file = "/Users/etisinhawork/PreCISE/blacklist.April2024.txt")
+positions_blacklist <- read_tsv(file = "/Users/etisinhawork/PreCISE/blacklist.position.April2024.txt")
+
+# add BlackListPass filter
+num_samples <- all_seq_hsmetrics_pass$SampleID %>% unique() %>% length()
+patient_seq_calls_annotated_final_updated_qc_filter_pon <- patient_seq_calls_annotated_final_updated_qc_filter_pon %>%
+  mutate(
+    blacklistLesionFilter = !(lesionID %in% lesions_blacklist$ponlesionID),
+    blacklistPositionFilter = !(positionID %in% positions_blacklist$ponpositionID),
+    ponRecurringFilter = !(ponLesionCount > 1),
+    ponPositionFilter = !(ponPositionCount > 2),
+    recurringFilter = !(lesionCount > (0.05 * num_samples) & VAF > 0.004),
+    positionFilter = !(positionCount > (0.1 * num_samples) & VAF > 0.004)
+  )
+```
+
+
+```{r}
+# fix filters for lesionCount and positionCount
+#num_samples <- n_distinct(patient_seq_calls_annotated_final_updated$SampleID)
+num_samples <- n_distinct(patient_seq_calls_annotated_final_updated_qc_filter_pon$SampleID)
+patient_seq_calls_annotated_final_updated_fix_filters <- patient_seq_calls_annotated_final_updated_qc_filter_pon %>% 
+  mutate(
+    recurringFilter = !(lesionCount > 0.1 * num_samples & VAF > 0.004),
+    positionFilter = !(positionCount > 0.2 * num_samples & VAF > 0.004))
+
+# Apply recurring and annotation-based variant filters
+#!blacklistLesionFilter & !blacklistPositionFilter
+patient_seq_calls_annotated_final_updated_all_filters <- patient_seq_calls_annotated_final_updated_fix_filters %>% 
+  filter((recurringFilter & positionFilter & ponPositionFilter & ponRecurringFilter ) | CosmicCount >= 10 | grepl("TCGA", TCGA) | posCtrlFilter) %>% 
+  filter((EntropyLeft > 1 & EntropyCenter > 1 & EntropyRight > 1) | CosmicCount >= 10 | grepl("TCGA", TCGA) | VAF > 0.02 | posCtrlFilter)
+
+#saveRDS(patient_seq_calls_annotated_final_updated_all_filters, "patient_seq_calls_annotated_final_updated_all_filters.rda")
+#patient_seq_calls_annotated_final_updated_all_filters <- readRDS("/Users/etisinhawork/PreCISE/patient_seq_calls_annotated_final_updated_all_filters.rda")
+```
+
+```{r}
+# Add annotations for plots: protChange, variant, ControlType, dilser_dilution
+patient_seq_calls_annotated_filtered <- patient_seq_calls_annotated_final_updated_all_filters
+
+patient_seq_calls_annotated_filtered$protChange <- patient_seq_calls_annotated_filtered$HGVSp %>% sapply(.,function(x) strsplit(as.character(x),":")[[1]][2])
+patient_seq_calls_annotated_filtered$variant <- str_c(patient_seq_calls_annotated_filtered$Gene, patient_seq_calls_annotated_filtered$protChange, sep = " ")
+```
+
+```{r}
+# only include samples that passed QC: X/336 patient samples with filtered CH variants pass QC
+patient_seq_calls_annotated_filtered_samplepass <- patient_seq_calls_annotated_filtered %>% subset(patient_seq_calls_annotated_filtered$SampleID %in% all_seq_hsmetrics_pass$SampleID) %>% select(SampleID) %>% unique()
+
+patient_seq_calls_annotated_filtered %<>% subset(patient_seq_calls_annotated_filtered$SampleID %in% patient_seq_calls_annotated_filtered_samplepass$SampleID)
+```
+
+```{r}
+# remove variants that are from the germline calls 
+# below 2%, likely false positives 
+# above 20%, likely contaminants
+patient_seq_calls_annotated_germline_filter <- patient_seq_calls_annotated_filtered %>% subset((variant %in% germline_vcf_table_df_pass_filter_patients$variant & (VAF > 0.2 | VAF < 0.02) & Gene %in% c("COL3A1", "KMT2D", "LPA", "MYH11", "PMS2"))) 
+
+patient_seq_calls_annotated_filtered %<>% subset(!(variant %in% patient_seq_calls_annotated_germline_filter$variant))
+```
+
+```{r}
+# Annotate cohort for filtering figures
+patient_seq_calls_annotated_filtered  <- patient_seq_calls_annotated_filtered %>% 
+  mutate(Cohort = case_when(
+      grepl('WIHS', SampleID) ~ 'HIV',
+      grepl('WHIS', SampleID) ~ 'HIV',
+      # grepl('RS', SampleID) ~ 'Roswell Park',
+      # grepl('CML', SampleID) ~ 'Bone Marrow',
+      # grepl('Chicago', SampleID) ~ 'Chicago',
+      # grepl('Mx', SampleID) ~ 'Mexico',
+      TRUE ~ 'Other'))
+```
+
+
+```{r}
+#saveRDS(patient_seq_calls_annotated_filtered, "patient_seq_calls_annotated_filtered.rda")
+patient_seq_calls_annotated_filtered <- readRDS("patient_seq_calls_annotated_filtered.rda")
+```
+
+```{r}
+#saveRDS(patient_seq_calls_annotated_filtered_pon, "patient_seq_calls_annotated_filtered_pon.rda")
+#patient_seq_calls_annotated_filtered_pon <- readRDS("patient_seq_calls_annotated_filtered_pon.rda")
+```
+
+# Figure 3a: CH Oncoprint
+
+```{r}
+# new table for oncoprint plot
+
+oncoprint_df <- patient_seq_calls_annotated_filtered %>% filter(!Cohort == "HIV")
+
+
+# Convert the filtered dataframe to a binary matrix
+names(oncoprint_df)[names(oncoprint_df) == 'Gene'] <- 'Hugo_Symbol'
+names(oncoprint_df)[names(oncoprint_df) == 'Chr'] <- 'Chromosome'
+names(oncoprint_df)[names(oncoprint_df) == 'Pos'] <- 'Start_Position'
+oncoprint_df$End_Position <- oncoprint_df$Start_Position
+names(oncoprint_df)[names(oncoprint_df) == 'Ref'] <- 'Reference_Allele'
+names(oncoprint_df)[names(oncoprint_df) == 'Alt'] <- 'Tumor_Seq_Allele2'
+names(oncoprint_df)[names(oncoprint_df) == 'VARIANT_CLASS'] <- 'Variant_Type'
+oncoprint_df <- oncoprint_df %>%
+  mutate(Variant_Type = ifelse(Variant_Type == "SNV", "SNP", Variant_Type))
+names(oncoprint_df)[names(oncoprint_df) == 'Consequence'] <- 'Variant_Classification'
+names(oncoprint_df)[names(oncoprint_df) == 'SampleID'] <- 'Tumor_Sample_Barcode'
+
+my_vs <- c(
+  "inframe_deletion",
+  "missense_variant",
+  "splice_acceptor_variant&coding_sequence_variant",
+  "inframe_insertion",
+  "frameshift_variant",
+  "stop_gained",
+  "inframe_deletion&splice_region_variant",
+ " missense_variant&splice_region_variant",
+  "splice_donor_variant",
+  "splice_acceptor_variant",
+  "inframe_insertion&splice_region_variant"
+)
+
+# create maf file
+laml <- read.maf(maf = oncoprint_df, 
+                 clinicalData = oncoprint_df %>% select(Tumor_Sample_Barcode, CancerType),
+                 vc_nonSyn = my_vs, 
+                 verbose = FALSE)
+
+# add mean VAF barplot to the left
+mean_vafs <- oncoprint_df %>% 
+  unique() %>% 
+  select(Hugo_Symbol, VAF) %>% 
+  group_by(Hugo_Symbol) %>%
+  summarise(`Mean VAF` = mean(VAF, na.rm = TRUE)) 
+
+# plot oncoplot
+vc_cols <- RColorBrewer::brewer.pal(n = 11, name = 'Paired')
+names(vc_cols) <- my_vs
+oncoplot(maf = laml, 
+         colors = vc_cols, 
+         leftBarData = mean_vafs,
+         leftBarLims = c(0, 0.2),
+         draw_titv = TRUE,
+         titleText = NA)     
+ggsave(filename="/Users/etisinhawork/PreCISE/somatic_CH_oncoprint_withmeanvaf.pdf", device = "pdf", width = 4, height = 2, units = "in")
+```
+
+# Supplemental ?: Box Plot Num Mutations per Sample
+
+```{r}
+# Box plot for number of mutations per sample
+num_mutations_table <- patient_seq_calls_annotated_filtered %>% 
+  filter(!Cohort == "HIV") %>% 
+  select(SampleID) %>% 
+  table() %>% 
+  as.data.frame() %>% 
+  select(Freq) %>% 
+  table() %>% 
+  as.data.frame() #%>% 
+#  filter(Freq.1 > 3)
+colnames(num_mutations_table) <- c("num_var", "freq")
+ggbarplot(num_mutations_table, x = "num_var", y = "freq", fill = "black") +
+  theme(strip.text.y = element_text(angle = 0)) +
+  labs(
+    x = "Number of Somatic Variants Per Sample",
+    y = "Number of Samples"
+    ) +
+  rotate_x_text(angle = 45) +
+  ylim(0,70)
+ggsave(filename="/Users/etisinhawork/PreCISE/somatic_variants_per_sample_NOHIV.pdf", device = "pdf", width = 4, height = 4, units = "in")
+```
+
+# Supplemental: Hazard Ratio
+```{r}
+# hazard ratio:
+# question: does having a germline mutation in DDR result in higher frequency of having CH or DTA mutations
+library(survival)
+library(survminer)
+
+# ch_and_germline_sample_names <- germline_vcf_table_df_pass_filter_patients %>% 
+#   select(SAMPLE) %>% 
+#   subset(SAMPLE %in% patient_seq_calls_annotated_filtered$SampleID)
+samples_with_germline <- germline_vcf_table_df_pass_filter_patients %>%
+  filter(!Cohort == "HIV") %>% 
+  select(SAMPLE) %>% 
+  unique() %>% 
+  as.data.frame()
+samples_with_germline$germline_mutation <- 1
+
+samples_with_ch <- patient_seq_calls_annotated_filtered %>% 
+  filter(!Cohort == "HIV") %>%
+  select(SampleID) %>% 
+  unique() %>%
+  as.data.frame()
+samples_with_ch$ch_mutation <- 1
+
+samples_with_ch_dta <- patient_seq_calls_annotated_filtered %>% 
+  filter(Gene %in% DTA) %>%
+  select(SampleID) %>% 
+  unique() %>%
+  as.data.frame()
+samples_with_ch_dta$ch_dta_mutation <- 1
+
+samples_with_germline_ddr <- germline_vcf_table_df_pass_filter_patients %>%
+  filter(SYMBOL %in% DDR) %>% 
+  select(SAMPLE) %>% 
+  unique() %>% 
+  as.data.frame()
+samples_with_germline_ddr$germline_ddr_mutation <- 1
+
+# create binary table - germline and CH binary values
+ch_and_germline_binary_table <- all_seq_sample_ids %>% 
+  filter(!grepl("WIHS|WHIS", SampleID)) %>% 
+  filter(!(grepl("AMLMutationMix|Control|NA12878|CH[2-4]xDilSer|NPB177", SampleID)))
+ch_and_germline_binary_table <- merge(ch_and_germline_binary_table, samples_with_germline, by.x = "SampleID", by.y = "SAMPLE", all=T) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  merge(., samples_with_ch, by = "SampleID", all=T) %>% 
+  mutate_all(~replace(., is.na(.), 0))
+
+ch_and_germline_binary_table <- merge(ch_and_germline_binary_table, samples_with_germline_ddr, by.x = "SampleID", by.y = "SAMPLE", all=T) %>%
+  mutate_all(~replace(., is.na(.), 0))
+ch_and_germline_binary_table <- merge(ch_and_germline_binary_table, samples_with_ch_dta, by = "SampleID", all=T) %>%
+  mutate_all(~replace(., is.na(.), 0))
+
+# perform fisher-test
+ch_and_germline_contingency_table <- table(ch_and_germline_binary_table$germline_mutation, ch_and_germline_binary_table$ch_mutation)
+fisher_test <- fisher.test(ch_and_germline_contingency_table)
+
+# fisher-test for just DDR germ-line mutations
+ch_and_germline_ddr_contingency_table <- ch_and_germline_binary_table %>% 
+  filter(!(germline_mutation == 1 & germline_ddr_mutation == 0)) %>% #exclude samples with non-DDR germline  
+  with(table(germline_ddr_mutation, ch_mutation))
+fisher_test_ddr <- fisher.test(ch_and_germline_ddr_contingency_table)
+
+# fisher-test for just DDR germ-line mutations and DTA ch mutations
+ch_and_germline_ddr_dta_contingency_table <- ch_and_germline_binary_table %>% 
+  filter(!(germline_mutation == 1 & germline_ddr_mutation == 0)) %>% #exclude samples with non-DDR germline
+  filter(!(ch_mutation == 1 & ch_dta_mutation == 0)) %>% #exclude samples with non-DTA ch variants
+  with(table(germline_ddr_mutation, ch_mutation))
+fisher_test_ddr_dta <- fisher.test(ch_and_germline_ddr_dta_contingency_table)
+```
+
+```{r}
+fisher_tests <- list(
+  `DDR Germline DTA CH` = fisher_test_ddr_dta,
+  `DDR Germline Any CH` = fisher_test_ddr,
+  `Any Germline Any CH` = fisher_test
+)
+
+# Extract odds ratios, confidence intervals, and p-values
+odds_ratios <- sapply(fisher_tests, function(x) x$estimate)
+ci_lower <- sapply(fisher_tests, function(x) x$conf.int[1])
+ci_upper <- sapply(fisher_tests, function(x) x$conf.int[2])
+p_values <- sapply(fisher_tests, function(x) x$p.value)
+
+# Create a data frame for plotting
+data <- data.frame(
+  Group = rep(names(fisher_tests), each = 1),
+  Odds_Ratio = odds_ratios,
+  CI_Lower = ci_lower,
+  CI_Upper = ci_upper,
+  p_value = p_values,
+  Sample_Size= c(561,444,419)
+  #Sample_Size = c(1079, 590, 529) # with HIV samples
+)
+
+# Plot the odds ratios, confidence intervals, and p-values
+forest_plot <- ggplot(data, aes(x = Group, 
+                                y = Odds_Ratio, 
+                                ymin = CI_Lower, 
+                                ymax = CI_Upper, 
+                                label = paste("p =", round(p_value, 3)))) +
+  geom_pointrange(color = "black", size = 0.5) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  geom_text(hjust = 1, vjust = -0.75, size = 3) +
+  #geom_text(aes(label = paste("N =", Sample_Size)))  +
+  coord_flip() +
+  ylim(0, max(ci_upper) + 1) +
+  labs(
+    x = "Group",
+    y = "Odds Ratio (95% CI)"
+  ) +
+  ggpubr::theme_pubr() 
+
+forest_plot
+ggsave(filename="/Users/etisinhawork/PreCISE/germline_ch_odds_ratio_noHIV.pdf", device = "pdf", width = 4, height = 4, units = "in")
+```
+
+# Incorporate Nuria's final calls
+
+```{r}
+# Roswell Lung
+load("/Users/etisinhawork/PreCISE/PreCISE1v3-calls-2Eti/roswell-lung/muts.Rdata")
+project_roswell_lung <- muts
+
+# Roswell Melanoma
+load("/Users/etisinhawork/PreCISE/PreCISE1v3-calls-2Eti/roswell-melanoma/mel.Rdata")
+project_roswell_melanoma <- mel
+
+# Roswell Pnet
+load("/Users/etisinhawork/PreCISE/PreCISE1v3-calls-2Eti/roswell-pnet/variant.calls.report.Rdata")
+project_roswell_pnet <- variant.calls.report
+
+# Chicago
+load("/Users/etisinhawork/PreCISE/PreCISE1v3-calls-2Eti/chicago/variants_final_flag.filt.Rdata")
+project_chicago <- variants_final_flag.filt
+
+# Create whitelist - sample names, lesionID, and positionID
+project_whitelist_df <- rbind(project_roswell_lung %>% select(SampleID, lesionID),
+                              project_roswell_melanoma %>% select(SampleID, lesionID),
+                              project_roswell_pnet %>% select(SampleID, lesionID),
+                              project_chicago %>% select(SampleID, lesionID))
+```
+
+# Get numbers for the paper 
+```{r}
+# load in variables
+control_seq_calls_annotated_final <- readRDS("control_seq_calls_annotated_final_updated.rda")
+patient_seq_calls_annotated_final_updated <- readRDS("patient_seq_calls_annotated_final_updated.rda")
+```
+
+Quality control
+```{r}
+# 958 patient samples and 68 control samples (total 1026 samples) have been used for the PRECise1 panel and pipeline validation and analysis for this paper. 
+cat("Num patients: ", patient_seq_calls_annotated_final_updated %>% select(SampleID) %>% n_distinct())# 958
+cat("Num control: ", control_seq_calls_annotated_final %>% select(SampleID) %>% n_distinct()) # 68
+cat("Num total samples: ", (patient_seq_calls_annotated_final_updated %>% select(SampleID) %>% n_distinct())+(control_seq_calls_annotated_final %>% select(SampleID) %>% n_distinct())) #1026
+
+# 959 samples passed quality control filters described in the methods section
+cat("Samples pass QC: ", (all_seq_hsmetrics_pass %>% select(SampleID) %>% n_distinct())) 
+
+# Across the 959 samples, the mean target coverage is 1470 (median 1235), mean bait coverage of 1937, mean total reads of 18.75 million reads, and average on-target rate of 63%. 
+mean_target_coverage <- mean(all_seq_hsmetrics_pass$MEAN_TARGET_COVERAGE) %>% round(0)
+cat("Mean target coverage: ", mean_target_coverage) 
+median_target_coverage <- mean(all_seq_hsmetrics_pass$MEDIAN_TARGET_COVERAGE) %>% round(0)
+cat("Median target coverage: ", median_target_coverage)
+mean_bait_coverage <-  mean(all_seq_hsmetrics_pass$MEAN_BAIT_COVERAGE) %>% round(0)
+cat("Mean bait coverage: ", mean_bait_coverage)
+mean_total_m_reads <- mean(all_seq_hsmetrics_pass$TOTAL_READS/1000000) %>% round(1)
+cat("Mean total M reads: ", mean_total_m_reads)
+mean_perc_on_target <- mean(all_seq_hsmetrics_pass$PCT_ON_TARGET) %>% round(0)
+cat("Percentage on target %: ", mean_perc_on_target)
+
+#The median depth was calculated, for which the average is X.
+median_depth <- median(all_seq_depth_mean_sample_pass$mean_depth) %>% round(0)
+```
+
+```{r}
+# Across the 61 control samples that passed filters, the mean target coverage is 1534 (median 1186), mean bait coverage of 2095, mean total reads of 19.5 million reads, and average on-target rate of 63%. 
+# get control sample QC data only
+control_seq_calls_sampleids <- control_seq_calls_annotated_final %>% select(SampleID) %>% unique()
+control_seq_hsmetrics_pass <- all_seq_hsmetrics_pass %>% subset(SampleID %in% control_seq_calls_sampleids$SampleID)
+
+n_control_samples_pass <- control_seq_hsmetrics_pass$SampleID %>% n_distinct()
+cat("Number of control samples that passed QC:", n_control_samples_pass)
+mean_target_coverage <- mean(control_seq_hsmetrics_pass$MEAN_TARGET_COVERAGE) %>% round(0)
+cat("Mean target coverage: ", mean_target_coverage) 
+median_target_coverage <- mean(control_seq_hsmetrics_pass$MEDIAN_TARGET_COVERAGE) %>% round(0)
+cat("Median target coverage: ", median_target_coverage)
+mean_bait_coverage <-  mean(control_seq_hsmetrics_pass$MEAN_BAIT_COVERAGE) %>% round(0)
+cat("Mean bait coverage: ", mean_bait_coverage)
+mean_total_m_reads <- mean(control_seq_hsmetrics_pass$TOTAL_READS/1000000) %>% round(1)
+cat("Mean total M reads: ", mean_total_m_reads)
+mean_perc_on_target <- mean(control_seq_hsmetrics_pass$PCT_ON_TARGET) %>% round(0)
+cat("Percentage on target %: ", mean_perc_on_target)
+```
+
+Limit of Detection
+```{r}
+#  61 control samples passed quality control filters. Detected X variants from Y number of samples that passed QC. 
+num_control_samples_pass <- control_seq_calls_annotated_final %>% subset(SampleID %in% all_seq_hsmetrics_pass$SampleID) %>% select(SampleID) %>% n_distinct()
+cat(num_control_samples_pass, " control samples passed quality control filters")
+num_control_variants <- control_seq_calls_annotated_filtered_final %>% nrow()
+cat(num_control_variants, " variants were detected")
+
+# The expected and observed VAF for each of the control variants was compared via a linear model and showed high correlation with a R^2 value of X. 
+# from figure 1F 
+
+# Variants with an expected VAF over 2% were successfully observed in X% of control samples; compared to variants less than 1% were successfully observed in Y% of control samples. 
+two_perc_sucess <- proportional_expected_calls_df$high_confidence_perc[3] %>% round(0)
+cat("Variants with an expected VAF over 2% were successfully observed in ", two_perc_sucess, "% of control samples")
+one_perc_sucess <- proportional_expected_calls_df$high_confidence_perc[2] %>% round(0)
+cat("compared to variants less than 1% were successfully observed in ", one_perc_sucess, "% of control samples")
+
+# While 250ng of DNA was the default concentration, an input of 125ng and 75ng yielded a sensitivity of x% and y% respectively and observed similar VAFs.
+perc_sucess_75ng <- proportional_expected_calls_df_75$high_confidence_perc[2] %>% round(0)
+perc_sucess_125ng  <- proportional_expected_calls_df_125$high_confidence_perc[2] %>% round(0)
+cat("While 250ng of DNA was the default concentration, an input of 125ng and 75ng yielded a sensitivity of", perc_sucess_125ng,"% and ",perc_sucess_75ng,"% respectively and observed similar VAFs.")
+
+# The positive predictive value (PPV) is 100%
+default_calls <- control_seq_calls_annotated_filtered_final %>% filter(dilser_expected_vaf > 1) 
+PPV <- (default_calls %>% filter(VariantInDilSer == TRUE) %>%  nrow())/( default_calls %>% nrow()) *100 %>% round(0)
+cat("The positive predictive value (PPV) for above a 1% expected VAF is ", PPV,"%")
+```
+
+Somatic variant calling analysis
+```{r}
+# We detected X number of variants prior to applying the filters described in the methods section. 
+
+# After applying all post-variant calling filters and conducting a manual review, 100  samples were found to have  144 somatic mutations in  26  genes covered by the panel.
+num_patient_sample_pass <- all_seq_hsmetrics_pass %>% filter(!SampleID %in% control_seq_calls_annotated_final$SampleID) %>% #exclude control sample
+  select(SampleID) %>% 
+  filter(!grepl("WHI|WIH", SampleID)) %>% #remove HIV samples
+  n_distinct()
+num_patient_w_ch <- patient_seq_calls_annotated_filtered %>% filter(!Cohort == "HIV") %>% select(SampleID) %>% n_distinct()
+num_genes <- patient_seq_calls_annotated_filtered %>% filter(!Cohort == "HIV") %>% select(Gene) %>% n_distinct()
+num_ch_variants <- patient_seq_calls_annotated_filtered %>% unique() %>% filter(!Cohort == "HIV") %>% nrow()
+cat("After applying all post-variant calling filters and conducting a manual review,", num_patient_w_ch," samples were found to have " , num_ch_variants, "somatic mutations in ", num_genes," genes covered by the panel." )
+
+# The incidence rate of CH is 28% (272/959 samples) in our cohort. 
+incidence_rate <- num_patient_w_ch/num_patient_sample_pass * 100
+cat("The incidence rate of CH is ", incidence_rate %>% round(0),"% (", num_patient_w_ch,"/", num_patient_sample_pass," samples) in our cohort.")
+
+# The most mutated genes are DNMT3A, ASXL1, and LPA. 
+gene_table <- patient_seq_calls_annotated_filtered %>% filter(!Cohort == "HIV") %>% unique() %>% select(Gene) %>% table() %>% as.data.frame() %>% arrange(desc(Freq))
+cat("The most mutated genes are ",gene_table$Gene[1] %>% as.character(),", ",gene_table$Gene[2] %>% as.character(),", and ",gene_table$Gene[3] %>% as.character(),".")
+
+# 100 samples have 1 somatic mutation, 71 have 2 somatic mutations, and 35 samples have 3 or more somatic mutations. 
+cat("",num_mutations_table$freq[1]," samples have 1 somatic mutation, ",num_mutations_table$freq[2]," have 2 somatic mutations, and ", num_mutations_table$freq[3]," samples have 3 or more somatic mutations. ")
+```
+
+Germline analysis
+```{r}
+# 73 samples have a total of 123 germline variants in 43 genes covered by the panel. 
+n_samples_w_germline <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(!Cohort == "HIV") %>% 
+  select(SAMPLE) %>% n_distinct()
+n_germline_calls <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(!Cohort == "HIV")%>% unique() %>% nrow()
+n_germline_genes <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(!Cohort == "HIV") %>% unique() %>% select(SYMBOL) %>% n_distinct()
+germline_incidence_rate <- (n_samples_w_germline/num_patient_sample_pass*100)
+cat("",n_samples_w_germline,"(", germline_incidence_rate %>% round(0) ,"%) samples have a total of",n_germline_calls,"germline variants in",n_germline_genes,"genes covered by the panel. ")
+
+#26 samples have 26 variants in DNA Damage Response (DDR) genes ATM, PPM1D, and TP53. 
+n_samples_w_germline_ddr <- germline_vcf_table_df_pass_filter_patients %>% 
+  filter(!Cohort == "HIV") %>% 
+  filter(SYMBOL %in% c("ATM","PPM1D","TP53")) %>% select(SAMPLE) %>% n_distinct()
+n_germline_calls_ddr <- germline_vcf_table_df_pass_filter_patients %>% unique() %>% 
+  filter(!Cohort == "HIV") %>% 
+  filter(SYMBOL %in% c("ATM","PPM1D","TP53"))  %>% nrow()
+cat("",n_samples_w_germline_ddr,"samples have ",n_germline_calls_ddr," variants in DNA Damage Response (DDR) genes ATM, PPM1D, and TP53.")
+
+#X samples have 1 germline mutation, X have 2 or more germline mutations in the genes covered by the panel.
+cat("",num_mutations_table$freq[1]," samples have 1 germline mutation, ",num_mutations_table$freq[2]," have 2 germline mutations, and ", num_mutations_table$freq[3] + num_mutations_table$freq[4]," samples have 3 or more germline mutations. ")
+
+#A fisher-test was used to evaluate the odds ratio of acquiring CH given the presence of a germline variant. Across all germline, there is no statistical increase or decrease of odds for acquiring CH (OR = 1.05, p = 0.726, CI: 0.79-1.40). 
+
+#There trend towards increase in odds of presence of CH for the subset of samples with germline mutations in DDR genes (OR = 1.76, p = 0.039, CI: 1.03-2.21) and as subset of samples with these germline mutations and DTA somatic variants (OR  = 2.00, p = 0.022, CI: 1.00-2.29).   
+
+```
+
