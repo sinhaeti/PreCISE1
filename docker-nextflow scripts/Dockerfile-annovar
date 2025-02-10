@@ -1,0 +1,61 @@
+FROM ubuntu:23.04 as base_image
+#===============================#
+# Docker Image Configuration	#
+#===============================#
+LABEL org.opencontainers.image.source='https://github.com/eipm/PreCise' \
+	vendor="Englander Institute for Precision Medicine" \
+	description="Data processing image for the PreCISE and PanHeme assays. It includes FASTQ trimming, alignment, and variant calling." \
+	maintainer="zli4004@med.cornell.edu" \
+	base_image="ubuntu" \
+	base_image_version="23.04"
+
+ENV APP_NAME="PreCISE" \
+	TZ='US/Eastern' \
+	PROGRAMS="opt"
+
+RUN apt-get update -y && apt-get upgrade -y && \
+	apt-get install -y wget \
+		build-essential \
+		zlib1g-dev \
+		libvcflib-dev \
+		libvcflib-tools \
+		bcftools \
+		bwa \
+		libbz2-dev \
+		liblzma-dev \
+		autoconf \
+		default-jre \
+	    && rm -rf /var/lib/apt/lists/*
+
+#===========================#
+# Install ANNOVAR #
+#===========================#
+LABEL	tool=annovar_latest
+#ENV 	ANNOVAR_VERSION 
+ENV     annovar_dir /${PROGRAMS}/annovar
+RUN     mkdir -p ${annovar_dir} \
+&&      wget -O ${annovar_dir}/annovar.latest.tar.gz http://www.openbioinformatics.org/annovar/download/0wgxR2rIVP/annovar.latest.tar.gz \
+&&      tar -xvzf ${annovar_dir}/annovar.latest.tar.gz -C ${annovar_dir} \
+&&      rm ${annovar_dir}/annovar.latest.tar.gz
+
+#===========================#
+# Install VarDictJava #
+#===========================#
+LABEL	tool=vardict version=1.8.3
+ENV 	VARDICT_VERSION 1.8.3
+ADD     https://github.com/AstraZeneca-NGS/VarDictJava/releases/download/v{VARDICT_VERSION}/VarDict-${VARDICT_VERSION}.tar /VarDict/
+RUN     cd /VarDict \
+&&	tar xf VarDict-${VARDICT_VERSION}.tar \
+&&      rm -rf /VarDict/VarDict-${VARDICT_VERSION}.tar
+
+#===========================#
+# Second stage of build     #
+#===========================#
+FROM ubuntu:23.04
+ENV TZ='US/Eastern'
+ENV 	VARDICT_VERSION 1.8.3
+RUN     apt-get update -y && apt-get upgrade -y && apt-get install -y default-jre && rm -rf /var/lib/apt/lists/*
+COPY --from=base_image /usr/local/bin/ /usr/local/bin/
+COPY --from=base_image /VarDict/VarDict-${VARDICT_VERSION}/ /VarDict-${VARDICT_VERSION}/
+ENV PATH $PATH:/VarDict-${VARDICT_VERSION}/bin/
+WORKDIR	/data
