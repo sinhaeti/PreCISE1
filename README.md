@@ -6,7 +6,7 @@ PreCISE1, or **Pre**dictive **C**lonal hematopoeisis, cardiovascular, and cancer
 ## Pipeline Information
 
 ### Pipeline Note
-The main branch consists of bash scriptd optimized for high-performance compute clusters. Refer to the "docker-nextflow" branch for a preproducible pipeline across different compute environments. 
+The main branch consists of bash scripts optimized for high-performance compute clusters. Refer to the "docker-nextflow" branch for a reproducible pipeline across different compute environments. 
 
 ### How to Run the Pipeline
 `./run_precise_jobarray.sh [config_file] [fastq_directory] [output_directory] [min_allele_fraction] [enzymatic_or_sonication]`
